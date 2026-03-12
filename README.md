@@ -1,238 +1,163 @@
-# webreel
+# AI AGENT VIDEO TUTOR - TỰ ĐỘNG HÓA QUAY VIDEO HƯỚNG DẪN
 
-Record scripted browser videos as MP4 files with sound effects, cursor animation, and keystroke overlays.
+Sinh viên thực hiện: Nguyễn Văn Tổng
 
-[Documentation](https://webreel.dev) | [Examples](https://webreel.dev/examples)
+## 1. Tổng quan bài toán (Project Overview)
 
-Define steps in a JSON config (clicks, key presses, drags, pauses) and webreel drives a headless Chrome instance, captures screenshots at ~60fps, and encodes the result with ffmpeg.
+Dự án xây dựng hệ thống tự động tạo video hướng dẫn thực hành từ mô tả văn bản bằng cách sử dụng AI Agent để điều khiển trình duyệt và ghi lại thành video MP4 hoàn chỉnh.
 
-Chrome and ffmpeg are downloaded automatically on first use to `~/.webreel` if not already installed.
+**Đầu vào (Input):** Mô tả tác vụ bằng ngôn ngữ tự nhiên (tiếng Việt hoặc tiếng Anh)
 
-## Quick Start
+**Mục tiêu (Goal):** Tự động hóa quy trình quay video thực hành, giảm thời gian và công sức tạo nội dung giáo dục
 
-```bash
-npm install webreel
-npx webreel init --name my-video --url https://example.com
-npx webreel record
+**Đầu ra (Output):** File video MP4 hoàn chỉnh với chuyển động chuột, thao tác và có thể kèm theo giải thích bằng giọng nói
+
+## 2. Công nghệ sử dụng (Tech Stack)
+
+**AI Engine & Xử lý lõi:**
+- Google Gemini (gemini-3.1-flash-lite-preview): LLM điều khiển AI Agent
+- browser-use: Framework tự động hóa trình duyệt bằng AI
+- FPT.AI TTS: Text-to-speech tiếng Việt
+
+**Backend / Điều phối:**
+- Python 3.12+
+- Playwright: Điều khiển trình duyệt
+- webreel: Công cụ ghi hình trình duyệt
+
+**Triển khai & Môi trường:**
+- Docker & Docker Compose
+- Chrome headless-shell
+
+## 3. Luồng xử lý hệ thống (System Pipeline)
+
+```
+User Prompt (Văn bản mô tả)
+    |
+    v
+browser-use Agent (Thực hiện tác vụ trong trình duyệt)
+    |
+    v
+Parser (Chuyển đổi action history sang webreel config)
+    |
+    v
+AI Reviewer (Review và tối ưu config, tạo TTS script)
+    |
+    v
+webreel (Quay video từ config)
+    |
+    v
+Video Composer (Merge audio + video)
+    |
+    v
+Output: Video MP4 hoàn chỉnh
 ```
 
-## Examples
+## 4. Kế hoạch & Tiến độ triển khai
 
-<!-- EXAMPLES:START -->
+<table>
+<tr>
+<th>Tuần</th>
+<th>Nhiệm vụ trọng tâm</th>
+<th>Kết quả đầu ra (Deliverable)</th>
+</tr>
+<tr>
+<td>Tuần 1</td>
+<td>Tích hợp browser-use và Playwright để truy cập Cây trợ năng (Accessibility Tree), tự động bóc tách DOM thay vì dùng OCR. Nghiên cứu engine kết xuất Webreel.</td>
+<td>browser-use Agent hoạt động, truy cập được DOM và Accessibility Tree, hiểu cơ chế Webreel</td>
+</tr>
+<tr>
+<td>Tuần 2</td>
+<td>Sử dụng LLM phân rã kịch bản tiếng Việt. Viết Trình biên dịch (JSON Parser) bằng Python để ánh xạ log hành động thành file cấu hình chuẩn của Webreel.</td>
+<td>Parser hoàn chỉnh, chuyển đổi action history sang webreel config, AI Reviewer tối ưu config</td>
+</tr>
+<tr>
+<td>Tuần 3</td>
+<td>Xây dựng giao diện Streamlit. Tích hợp Text-to-Speech (FPT.AI Neural TTS) để sinh giọng đọc tự nhiên.</td>
+<td>Streamlit UI hoạt động, TTS tích hợp, tạo được audio narration tiếng Việt</td>
+</tr>
+<tr>
+<td>Tuần 4</td>
+<td>Tích hợp MoviePy để đồng bộ hóa âm thanh với hành động chuột (Bezier curves). Render tự động ra file video .mp4.</td>
+<td>Video Composer hoàn chỉnh, merge audio + video, output MP4 với audio sync</td>
+</tr>
+<tr>
+<td>Tuần 5</td>
+<td>Container hóa toàn bộ hệ thống bằng Docker (tối ưu Layer Caching cho Node.js và Python). Sinh 5 video thực hành mẫu.</td>
+<td>Docker image production-ready, 5 video demo hoàn chỉnh, tài liệu đầy đủ</td>
+</tr>
+</table>
 
-**[custom-theme](examples/custom-theme)** - Demonstrates fully customizing the cursor overlay and keystroke HUD appearance using a code editor page.
+## 5. Hướng dẫn cài đặt & Khởi chạy (Setup & Run)
 
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/custom-theme/videos/custom-theme.mp4" controls muted width="100%"></video>
+### Yêu cầu hệ thống (Prerequisites)
 
-**[drag-and-drop](examples/drag-and-drop)** - Demonstrates dragging elements between positions on a kanban board.
+- Đã cài đặt Python 3.12+
+- Đã cài đặt Node.js 18+
+- Đã cài đặt Docker (khuyến nghị)
+- Các API Keys cần thiết: Gemini API Key, FPT.AI API Key (cho TTS)
 
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/drag-and-drop/videos/drag-and-drop.mp4" controls muted width="100%"></video>
+### Các bước cài đặt
 
-**[form-filling](examples/form-filling)** - Demonstrates typing into form fields and clicking a submit button, simulating a login flow.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/form-filling/videos/form-filling.mp4" controls muted width="100%"></video>
-
-**[gif-output](examples/gif-output)** - Demonstrates outputting the recording as an animated GIF instead of the default MP4.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/gif-output/videos/gif-output.gif" controls muted width="100%"></video>
-
-**[hello-world](examples/hello-world)** - The simplest possible webreel example. Opens a landing page and clicks the call-to-action button.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/hello-world/videos/hello-world.mp4" controls muted width="100%"></video>
-
-**[keyboard-shortcuts](examples/keyboard-shortcuts)** - Demonstrates pressing key combos and displaying them in the keystroke HUD overlay. Uses a code editor page as the target.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/keyboard-shortcuts/videos/keyboard-shortcuts.mp4" controls muted width="100%"></video>
-
-**[mobile-viewport](examples/mobile-viewport)** - Demonstrates recording at mobile device dimensions using a finance app interface.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/mobile-viewport/videos/mobile-viewport.mp4" controls muted width="100%"></video>
-
-**[modifier-clicks](examples/modifier-clicks)** - Demonstrates clicking elements with modifier keys held down, simulating multi-select in a file manager.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/modifier-clicks/videos/modifier-clicks.mp4" controls muted width="100%"></video>
-
-**[multi-demo](examples/multi-demo)** - Demonstrates defining multiple videos in a single config file, each producing its own output from the same page.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/multi-demo/videos/homepage.mp4" controls muted width="100%"></video>
-
-**[page-scrolling](examples/page-scrolling)** - Demonstrates scrolling the page and scrolling within a specific container element on a blog post layout.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/page-scrolling/videos/page-scrolling.mp4" controls muted width="100%"></video>
-
-**[screenshots](examples/screenshots)** - Demonstrates capturing PNG screenshots at specific points during a recording. Useful for generating static marketing assets or documentation images alongside videos.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/screenshots/videos/screenshots.mp4" controls muted width="100%"></video>
-
-**[shared-steps](examples/shared-steps)** - Demonstrates using `include` to share common setup steps across videos. The shared steps dismiss a cookie consent banner before the main video steps run.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/shared-steps/shared-steps.mp4" controls muted width="100%"></video>
-
-**[webm-output](examples/webm-output)** - Demonstrates outputting the recording as a WebM video using VP9 encoding.
-
-<video src="https://github.com/vercel-labs/webreel/raw/main/examples/webm-output/webm-output.webm" controls muted width="100%"></video>
-
-<!-- EXAMPLES:END -->
-
-## Usage
-
-### Init
-
-Scaffold a new config file:
+**Bước 1:** Clone kho lưu trữ và chuyển sang branch của dự án này
 
 ```bash
-webreel init
-webreel init --name login-flow --url https://myapp.com
-webreel init --name hero -o hero.config.json
+git clone git@github.com:AI-RDI/pre-ai-edtech.git
+cd pre-ai-edtech
+git checkout ai-agent-video-tutor
 ```
 
-This creates a `webreel.config.json` with a `$schema` for IDE autocompletion:
-
-```json
-{
-  "$schema": "https://webreel.dev/schema/v1.json",
-  "videos": {
-    "my-video": {
-      "url": "https://example.com",
-      "viewport": { "width": 1080, "height": 1080 },
-      "defaultDelay": 500,
-      "steps": [
-        { "action": "pause", "ms": 500 },
-        { "action": "click", "text": "Get Started" },
-        { "action": "key", "key": "cmd+a", "delay": 1000 }
-      ]
-    }
-  }
-}
-```
-
-### Record
-
-Record videos:
+**Bước 2:** Cài đặt thư viện phụ thuộc (Dependencies)
 
 ```bash
-webreel record
-webreel record hero login
-webreel record -c custom.config.json
-webreel record --watch
-webreel record --verbose
-```
-
-### Preview
-
-Run a video in a visible browser window without recording:
-
-```bash
-webreel preview
-webreel preview hero
-webreel preview hero --verbose
-```
-
-### Composite
-
-Re-composite videos from stored raw recordings and timelines without re-recording:
-
-```bash
-webreel composite
-webreel composite hero
-```
-
-### Install
-
-Download Chrome and ffmpeg to `~/.webreel`. Both are also auto-downloaded on first run. Use `--force` to fix corrupted or broken binaries.
-
-```bash
-webreel install
-webreel install --force
-```
-
-### Validate
-
-Check config files for errors without running them:
-
-```bash
-webreel validate
-webreel validate -c custom.config.json
-```
-
-### Help and Version
-
-```bash
-webreel --help
-webreel --version
-webreel record --help
-```
-
-### Actions
-
-| Action       | Fields                                                 | Description                          |
-| ------------ | ------------------------------------------------------ | ------------------------------------ |
-| `pause`      | `ms`                                                   | Wait for a duration                  |
-| `click`      | `text` or `selector`, optional `within`, `modifiers`   | Move cursor to an element and click  |
-| `key`        | `key` (e.g. `"cmd+z"`), optional `label`               | Press a key or key combo             |
-| `type`       | `text`, optional `target`, `charDelay`                 | Type text character by character     |
-| `scroll`     | optional `x`, `y`, `selector`                          | Scroll the page or an element        |
-| `wait`       | `selector` or `text`, optional `timeout`               | Wait for an element to appear        |
-| `screenshot` | `output`                                               | Capture a PNG screenshot             |
-| `drag`       | `from` and `to` (each with `text`/`selector`/`within`) | Drag from one element to another     |
-| `moveTo`     | `text` or `selector`, optional `within`                | Move cursor to an element            |
-| `navigate`   | `url`                                                  | Navigate to a new URL mid-video      |
-| `hover`      | `text` or `selector`, optional `within`                | Hover over an element (triggers CSS) |
-| `select`     | `selector`, `value`                                    | Select a value in a dropdown         |
-
-All steps (except `pause`) accept an optional `delay` field (ms to wait after the step). Use `defaultDelay` at the top-level or per-video to set a default.
-
-### Config options
-
-#### Top-level
-
-| Field          | Default   | Description                                  |
-| -------------- | --------- | -------------------------------------------- |
-| `$schema`      | -         | JSON Schema URL for IDE autocompletion       |
-| `outDir`       | `videos/` | Default output directory for videos          |
-| `baseUrl`      | `""`      | Prepended to relative video URLs             |
-| `viewport`     | 1080x1080 | Default browser viewport dimensions          |
-| `theme`        | -         | Default cursor and HUD overlay customization |
-| `include`      | -         | Array of step files prepended to all videos  |
-| `defaultDelay` | -         | Default delay (ms) after each step           |
-| `videos`       | required  | Object mapping video names to their configs  |
-
-#### Per-video
-
-| Field          | Default       | Description                                            |
-| -------------- | ------------- | ------------------------------------------------------ |
-| `url`          | required      | URL to navigate to                                     |
-| `baseUrl`      | inherited     | Prepended to relative URLs                             |
-| `viewport`     | inherited     | Browser viewport dimensions                            |
-| `zoom`         | -             | CSS zoom level applied to the page                     |
-| `waitFor`      | -             | CSS selector to wait for before start                  |
-| `output`       | `<name>.mp4`  | Output file path (.mp4, .gif, or .webm)                |
-| `thumbnail`    | `{ time: 0 }` | Object with `time` (seconds) or `enabled: false`       |
-| `include`      | inherited     | Array of paths to JSON files whose steps are prepended |
-| `theme`        | inherited     | Cursor and HUD overlay customization                   |
-| `defaultDelay` | inherited     | Default delay (ms) after each step                     |
-
-## Development
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) (v18+)
-- [pnpm](https://pnpm.io/)
-
-### Setup
-
-```bash
+# Cài đặt webreel (từ thư mục gốc)
 pnpm install
 pnpm build
+
+# Chuyển vào thư mục dự án
+cd webreel-ai-agent
+
+# Tạo virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+.\venv\Scripts\activate   # Windows
+
+# Cài đặt dependencies
+pip install -r requirements.txt
 ```
 
-## Packages
+**Bước 3:** Thiết lập biến môi trường
 
-| Package                                   | Description                                |
-| ----------------------------------------- | ------------------------------------------ |
-| [`@webreel/core`](packages/@webreel/core) | Chrome automation, recording, and overlays |
-| [`webreel`](packages/webreel)             | CLI that records videos from JSON configs  |
+Tạo file .env từ file .env.example và điền các thông tin bảo mật:
 
-## License
+```bash
+cp .env.example .env
+```
 
-Apache-2.0
+Nội dung file .env:
+
+```
+GEMINI_API_KEY=your_gemini_api_key_here
+FPT_API_KEY=your_fpt_api_key_here
+```
+
+**Bước 4:** Khởi chạy dự án
+
+Chạy bằng Docker (khuyến nghị):
+
+```bash
+docker-compose up --build
+```
+
+Hoặc chạy trực tiếp:
+
+```bash
+python run_pipeline.py "Vào google.com và tìm kiếm Python" --name demo
+```
+
+Output:
+- Config: output/demo/webreel_pipeline.config.json
+- Video: output/demo/videos/demo.mp4
+
+---
+
+Ghi chú: Mã nguồn và tài liệu thuộc khuôn khổ đồ án tốt nghiệp/cấp cơ sở năm học 2025-2026.
