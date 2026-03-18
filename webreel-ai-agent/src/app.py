@@ -1,9 +1,15 @@
 """
-Streamlit UI - AI Video Tutor
-Nguoi dung dan kich ban vao, nhan Generate, tai video ve.
+Streamlit UI - AI Video Tutor v3.0
+Web interface for the V3 Pipeline (6 phases, trace-driven).
+
+Usage:
+  cd webreel-ai-agent
+  streamlit run src/app.py
 """
+import asyncio
 import os
 import re
+import sys
 import threading
 import time
 from datetime import datetime
@@ -14,104 +20,153 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-try:
-    from .pipeline import run_pipeline, get_parsed_preview, MOCK_MODE
-except ImportError:
-    # When running as `streamlit run src/app.py` (not as a package)
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from src.pipeline import run_pipeline, get_parsed_preview, MOCK_MODE  # type: ignore
+# Import V3 pipeline
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from run_pipeline import run_pipeline_v3, CDP_URL
+from src.webreel_runner import OUTPUT_DIR
 
-# --- Page config ---
+
+# ==============================================================================
+# Page Config
+# ==============================================================================
 st.set_page_config(
-    page_title="AI Video Tutor",
-    page_icon="assets/icon.png" if Path("assets/icon.png").exists() else None,
+    page_title="AI Video Tutor v3",
+    page_icon="V",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# --- Helpers ---
-OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "videos"))
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-ACTION_ICONS = {
-    "navigate": "navigate_next",
-    "click": "ads_click",
-    "type": "keyboard",
-    "key": "keyboard_return",
-    "scroll": "swap_vert",
-    "pause": "pause_circle",
-}
-
+# ==============================================================================
+# Constants
+# ==============================================================================
 EXAMPLE_SCRIPTS = {
-    "Tim kiem Google": "Mo google.com, go 'lap trinh Python cho nguoi moi', nhan Enter",
-    "Vao VnExpress": "Mo vnexpress.net, click vao bai viet tin tuc dau tien, cuon xuong doc noi dung",
-    "GitHub": "Mo github.com, click Sign in, nhap email demo@test.com vao o email",
-    "YouTube": "Mo youtube.com, go 'hoc tieng Anh mien phi' vao o tim kiem, nhan Enter",
+    "E-Learning Slides": (
+        "Vào http://127.0.0.1:5500/webreel-ai-agent/test-cases/"
+        "microservices-elearning.html đọc nội dung trong trang "
+        "sau đó ấn tiếp theo cho tới khi hoàn thành bài học kết thúc."
+    ),
+    "Tìm kiếm Google": (
+        "Vào google.com tìm kiếm 'lập trình Python cho người mới' "
+        "và dừng lại khi thấy kết quả"
+    ),
+    "YouTube": (
+        "Vào youtube.com tìm kiếm 'Python programming' "
+        "và ấn vào video đầu tiên"
+    ),
+    "VnExpress": "Mở vnexpress.net, click vào bài viết tin tức đầu tiên",
+    "GitHub": "Mở github.com, tìm kiếm 'react' và click vào repo đầu tiên",
 }
 
+TTS_VOICES_EDGE = {
+    "vi-VN-HoaiMyNeural": "Nữ Hoài My (Edge)",
+    "vi-VN-NamMinhNeural": "Nam Nam Minh (Edge)",
+}
 
+TTS_VOICES_FPT = {
+    "banmai": "Nữ miền Bắc (Ban Mai)",
+    "leminh": "Nam miền Bắc (Lê Minh)",
+    "myan": "Nữ miền Nam (My An)",
+    "lannhi": "Nữ miền Nam trẻ (Lan Nhi)",
+    "linhsan": "Nữ miền Trung (Linh San)",
+}
+
+PIPELINE_STEPS = [
+    "Phase 1: The Scout (browser-use + narration)",
+    "Phase 2: The Parser (config + tts_script)",
+    "Phase 3: Ground-Truth TTS (Edge/FPT)",
+    "Phase 4: The Injector (exact pauses)",
+    "Phase 5: The Execution (Webreel record)",
+    "Phase 6: The Composer (ffmpeg trace-sync)",
+]
+
+
+# ==============================================================================
+# Helpers
+# ==============================================================================
 def _slugify(text: str) -> str:
-    """Chuyen text thanh slug an toan cho ten file."""
+    """Convert text to a safe filename slug."""
     slug = re.sub(r"[^\w\s-]", "", text.lower())
     slug = re.sub(r"[\s_]+", "-", slug)
     return slug[:40].strip("-") or "demo"
 
 
 def _init_session():
-    """Khoi tao session state lan dau."""
+    """Initialize session state defaults."""
     defaults = {
         "history": [],
         "video_path": None,
         "is_generating": False,
         "progress_step": 0,
-        "progress_total": 4,
+        "progress_total": len(PIPELINE_STEPS),
         "progress_msg": "",
+        "live_logs": [],
         "error_msg": None,
-        "preview_actions": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-def _make_progress_callback(step_placeholder, progress_bar, msg_placeholder):
-    """Tao callback cap nhat progress UI tu background thread."""
-    def callback(step: int, total: int, message: str):
-        st.session_state.progress_step = step
-        st.session_state.progress_total = total
-        st.session_state.progress_msg = message
-        # Streamlit khong cho update widget tu thread khac truc tiep,
-        # nen luu vao session_state va dung st.rerun() o main thread.
-    return callback
-
-
-def _run_pipeline_thread(user_input: str, video_name: str):
-    """Chay pipeline trong background thread."""
+def _run_pipeline_thread(
+    user_input: str,
+    video_name: str,
+    enable_tts: bool,
+    tts_voice: str,
+    tts_engine: str,
+    padding_ms: int,
+    cdp_url: str = CDP_URL,
+):
+    """Run V3 pipeline in a background thread."""
     try:
-        def on_progress(step, total, msg):
-            st.session_state.progress_step = step
-            st.session_state.progress_total = total
-            st.session_state.progress_msg = msg
+        # Intercept stdout/stderr to capture logs
+        class LogCapturer:
+            def __init__(self, original):
+                self.original = original
+            def write(self, message):
+                self.original.write(message)
+                if message.strip():
+                    st.session_state.live_logs.append(message.strip())
+                    if len(st.session_state.live_logs) > 100:
+                        st.session_state.live_logs = st.session_state.live_logs[-100:]
+            def flush(self):
+                self.original.flush()
 
-        video_path = run_pipeline(
-            user_input=user_input,
-            video_name=video_name,
-            output_dir=str(OUTPUT_DIR),
-            on_progress=on_progress,
-        )
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = LogCapturer(old_stdout)
+        sys.stderr = LogCapturer(old_stderr)
 
-        st.session_state.video_path = str(video_path)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            video_path = loop.run_until_complete(run_pipeline_v3(
+                task=user_input,
+                video_name=video_name,
+                cdp_url=cdp_url,
+                enable_tts=enable_tts,
+                tts_voice=tts_voice,
+                tts_engine=tts_engine,
+                padding_ms=padding_ms,
+            ))
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+        st.session_state.video_path = str(video_path) if video_path else None
         st.session_state.history.insert(0, {
             "script": user_input,
-            "path": str(video_path),
+            "path": str(video_path) if video_path else None,
             "name": video_name,
             "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "has_tts": enable_tts,
+            "engine": tts_engine,
         })
         st.session_state.error_msg = None
 
     except Exception as exc:
-        st.session_state.error_msg = str(exc)
+        import traceback
+        st.session_state.error_msg = f"{exc}\n\n{traceback.format_exc()}"
         st.session_state.video_path = None
 
     finally:
@@ -120,76 +175,229 @@ def _run_pipeline_thread(user_input: str, video_name: str):
         st.session_state.progress_msg = ""
 
 
-# ==================== MAIN UI ====================
+# ==============================================================================
+# CSS
+# ==============================================================================
+st.markdown("""
+<style>
+    :root {
+        --primary-blue: #2563eb;
+        --success-green: #10b981;
+        --warning-orange: #f59e0b;
+    }
 
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        border-bottom: 2px solid rgba(128, 128, 128, 0.2);
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 12px 24px;
+        font-size: 15px;
+        font-weight: 500;
+        border-radius: 8px 8px 0 0;
+        background: transparent;
+        transition: all 0.2s;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background: rgba(37, 99, 235, 0.1);
+    }
+    .stTabs [aria-selected="true"] {
+        background: var(--primary-blue) !important;
+        color: white !important;
+    }
+
+    .step-item {
+        padding: 10px 16px;
+        margin: 6px 0;
+        border-radius: 6px;
+        font-size: 14px;
+        border-left: 3px solid transparent;
+        transition: all 0.2s;
+    }
+    .step-done {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--success-green);
+        border-left-color: var(--success-green);
+    }
+    .step-active {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--warning-orange);
+        border-left-color: var(--warning-orange);
+        font-weight: 500;
+    }
+    .step-pending {
+        background: rgba(128, 128, 128, 0.1);
+        color: rgba(128, 128, 128, 0.7);
+        border-left-color: rgba(128, 128, 128, 0.3);
+    }
+
+    .stButton > button {
+        border-radius: 6px;
+        font-weight: 500;
+        transition: all 0.2s;
+    }
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.15);
+    }
+
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        border-radius: 6px;
+        transition: all 0.2s;
+    }
+    .stTextInput > div > div > input:focus,
+    .stTextArea > div > div > textarea:focus {
+        border-color: var(--primary-blue);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+    }
+
+    .streamlit-expanderHeader {
+        border-radius: 6px;
+        transition: all 0.2s;
+    }
+    .streamlit-expanderHeader:hover {
+        background: rgba(37, 99, 235, 0.05);
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 1.5rem;
+        font-weight: 600;
+    }
+
+    .stProgress > div > div > div {
+        background-color: var(--primary-blue);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ==============================================================================
+# MAIN UI
+# ==============================================================================
 _init_session()
 
-# --- Sidebar ---
-with st.sidebar:
-    st.title("Cau hinh")
 
-    st.subheader("Gemini API")
+# ---- Sidebar ----
+with st.sidebar:
+    st.title("Cấu hình")
+
+    # --- LLM Provider ---
+    st.subheader("LLM Provider")
     gemini_key = st.text_input(
         "GEMINI_API_KEY",
         value=os.environ.get("GEMINI_API_KEY", ""),
         type="password",
-        help="Lay tai https://aistudio.google.com/app/apikey",
+        help="Lấy tại https://aistudio.google.com/app/apikey",
     )
     if gemini_key:
         os.environ["GEMINI_API_KEY"] = gemini_key
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
-        except ImportError:
-            pass  # Gemini not installed - Azure fallback will be used
+        os.environ["GOOGLE_API_KEY"] = gemini_key
 
     st.divider()
 
-    st.subheader("Lich su video")
+    # --- Browser Mode ---
+    st.subheader("Browser Mode")
+    browser_mode = st.radio(
+        "Chế độ trình duyệt:",
+        ["CDP (Port 9222)", "Headless (Ẩn)"],
+        index=0,
+        help="Sử dụng CDP để kết nối vào Chrome đang mở sẵn (chống bot tốt hơn).",
+    )
+    st.session_state["browser_mode"] = browser_mode
+
+    cdp_url = CDP_URL
+    if browser_mode == "CDP (Port 9222)":
+        cdp_url = st.text_input("CDP Endpoint:", value=CDP_URL)
+
+    st.divider()
+
+    # --- TTS Config ---
+    st.subheader("Thuyết minh (TTS)")
+    enable_tts = st.toggle("Bật thuyết minh giọng nói", value=True)
+
+    tts_engine = "edge"
+    tts_voice = "vi-VN-HoaiMyNeural"
+    padding_ms = 300
+
+    if enable_tts:
+        tts_engine = st.selectbox(
+            "TTS Engine:",
+            options=["edge", "fpt"],
+            format_func=lambda e: "Edge TTS (miễn phí)" if e == "edge" else "FPT.AI (cần API key)",
+            index=0,
+        )
+
+        if tts_engine == "edge":
+            tts_voice = st.selectbox(
+                "Chọn giọng:",
+                options=list(TTS_VOICES_EDGE.keys()),
+                format_func=lambda v: TTS_VOICES_EDGE[v],
+                index=0,
+            )
+        else:
+            tts_voice = st.selectbox(
+                "Chọn giọng:",
+                options=list(TTS_VOICES_FPT.keys()),
+                format_func=lambda v: TTS_VOICES_FPT[v],
+                index=0,
+            )
+
+        padding_ms = st.slider(
+            "Padding (ms):",
+            min_value=0,
+            max_value=2000,
+            value=300,
+            step=100,
+            help="Thời gian đệm thêm vào cuối mỗi đoạn thuyết minh.",
+        )
+
+    st.divider()
+
+    # --- History ---
+    st.subheader("Lịch sử video")
     if st.session_state.history:
         for i, item in enumerate(st.session_state.history[:8]):
             col_info, col_btn = st.columns([3, 1])
             with col_info:
-                st.caption(f"{item['created_at']}")
-                st.markdown(f"**{item['name']}**")
+                st.caption(item["created_at"])
+                tts_badge = f" [{item.get('engine', 'edge').upper()}]" if item.get("has_tts") else ""
+                st.markdown(f"**{item['name']}**{tts_badge}")
             with col_btn:
-                if st.button("Xem", key=f"hist_{i}", use_container_width=True):
+                if st.button("Play", key=f"hist_{i}", use_container_width=True):
                     st.session_state.video_path = item["path"]
                     st.rerun()
     else:
-        st.caption("Chua co video nao.")
+        st.caption("Chưa có video nào.")
 
     st.divider()
-    if MOCK_MODE:
-        st.warning("DEMO MODE - khong goi API thuc")
-
-    st.caption("AI Video Tutor v1.0  |  Powered by Gemini + webreel")
+    st.caption("AI Video Tutor v3.0 | V3 Pipeline")
 
 
-# --- Main content ---
-st.title("AI Video Tutor")
-if MOCK_MODE:
-    st.info("DEMO MODE (MOCK_MODE=1): Pipeline dang mo phong, khong can API key hay trinh duyet.")
+# ---- Main Content ----
+st.title("AI Video Tutor v3")
 st.markdown(
-    "Nhap kich ban bang ngon ngu tu nhien, AI se tu dong mo trinh duyet "
-    "va quay video thuc hanh cho ban."
+    "Nhập kịch bản bằng ngôn ngữ tự nhiên, AI sẽ tự động mở trình duyệt, "
+    "quay video thực hành, và thêm thuyết minh giọng nói cho bạn. "
+    "Hỗ trợ mọi loại web: slides, tutorials, trang tin tức, ứng dụng web."
 )
 
-tab_create, tab_preview, tab_result = st.tabs(["Tao video", "Xem truoc buoc", "Ket qua"])
+tab_create, tab_result = st.tabs(["Tạo video", "Kết quả"])
 
-# ---- Tab 1: Tao video ----
+
+# ---- Tab 1: Create Video ----
 with tab_create:
     col_input, col_examples = st.columns([3, 2])
 
     with col_input:
-        st.subheader("Kich ban cua ban")
+        st.subheader("Kịch bản của bạn")
 
         script_input = st.text_area(
-            label="Nhap kich ban:",
+            label="Nhập kịch bản:",
             height=160,
             placeholder=(
-                "Vi du: Mo Google, go 'hoc lap trinh Python', nhan Enter\n\n"
-                "Hoac: Mo vnexpress.net, click bai viet dau tien, cuon xuong"
+                "Ví dụ: Vào google.com tìm kiếm 'lập trình Python' và dừng lại khi thấy kết quả\n\n"
+                "Hoặc: Mở youtube.com, tìm kiếm 'Python programming' và ấn vào video đầu tiên"
             ),
             label_visibility="collapsed",
         )
@@ -197,9 +405,9 @@ with tab_create:
         col_name, col_btn = st.columns([2, 1])
         with col_name:
             video_name_input = st.text_input(
-                "Ten video:",
+                "Tên video:",
                 value=_slugify(script_input) if script_input else "demo",
-                help="Ten file va key trong config",
+                help="Tên file và key trong config",
             )
 
         with col_btn:
@@ -212,7 +420,7 @@ with tab_create:
             )
 
     with col_examples:
-        st.subheader("Vi du kich ban")
+        st.subheader("Ví dụ mẫu")
         for label, example in EXAMPLE_SCRIPTS.items():
             if st.button(label, use_container_width=True, key=f"ex_{label}"):
                 st.session_state["_example_script"] = example
@@ -222,12 +430,12 @@ with tab_create:
     if "_example_script" in st.session_state:
         script_input = st.session_state.pop("_example_script")
 
-    # --- Xu ly Generate ---
+    # --- Handle Generate ---
     if generate_btn:
         if not script_input.strip():
             st.error("Vui long nhap kich ban truoc khi tao video.")
-        elif not MOCK_MODE and not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GITHUB_TOKEN"):
-            st.error("Can GEMINI_API_KEY hoac GITHUB_TOKEN (Azure fallback) o thanh ben trai.")
+        elif not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+            st.error("Can GEMINI_API_KEY o thanh ben trai.")
         else:
             video_name = video_name_input.strip() or _slugify(script_input)
             st.session_state.is_generating = True
@@ -235,18 +443,23 @@ with tab_create:
             st.session_state.video_path = None
             st.session_state.progress_step = 0
             st.session_state.progress_msg = "Dang khoi dong..."
+            st.session_state.live_logs = []
 
             thread = threading.Thread(
                 target=_run_pipeline_thread,
-                args=(script_input, video_name),
+                args=(
+                    script_input, video_name,
+                    enable_tts, tts_voice, tts_engine, padding_ms, cdp_url,
+                ),
                 daemon=True,
             )
-            thread.start()  # noqa: E501
+            thread.start()
             st.rerun()
 
     # --- Progress UI ---
     if st.session_state.is_generating:
         st.info("Video dang duoc tao, vui long cho...")
+
         step = st.session_state.progress_step
         total = st.session_state.progress_total
         msg = st.session_state.progress_msg
@@ -254,41 +467,50 @@ with tab_create:
         progress_val = step / total if total > 0 else 0
         st.progress(progress_val, text=f"Buoc {step}/{total}: {msg}")
 
-        step_labels = [
-            "Phan tich kich ban",
-            "Tim kiem elements tren trang web",
-            "Tao cau hinh webreel",
-            "Quay video",
-        ]
-        for i, label in enumerate(step_labels, 1):
-            icon = "check_circle" if i < step else ("hourglass_top" if i == step else "radio_button_unchecked")
-            color = "green" if i < step else ("orange" if i == step else "gray")
-            st.markdown(
-                f'<span style="color:{color}">{"[x]" if i < step else ("[>]" if i == step else "[ ]")} '
-                f'Buoc {i}: {label}</span>',
-                unsafe_allow_html=True,
-            )
+        for i, label in enumerate(PIPELINE_STEPS, 1):
+            if i < step:
+                st.markdown(
+                    f'<div class="step-item step-done">[DONE] {label}</div>',
+                    unsafe_allow_html=True,
+                )
+            elif i == step:
+                st.markdown(
+                    f'<div class="step-item step-active">[RUNNING] {label}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<div class="step-item step-pending">[PENDING] {label}</div>',
+                    unsafe_allow_html=True,
+                )
 
-        # Tu dong refresh de cap nhat progress
+        # Show live logs
+        with st.expander("Live Logs (Terminal)", expanded=True):
+            log_text = "\\n".join(st.session_state.live_logs)
+            st.code(log_text, language="bash")
+
+        # Auto-refresh
         time.sleep(2)
         st.rerun()
 
     # --- Error UI ---
     if st.session_state.error_msg:
         error = st.session_state.error_msg
-        st.error(f"Da xay ra loi: {error}")
+        st.error("Da xay ra loi!")
+        with st.expander("Chi tiet loi"):
+            st.code(error)
 
         with st.expander("Goi y khac phuc"):
-            if "url" in error.lower() or "navigate" in error.lower():
-                st.markdown("- Kich ban can co URL (vi du: 'Mo google.com')")
-            elif "quota" in error.lower() or "rate" in error.lower():
+            if "quota" in error.lower() or "rate" in error.lower():
                 st.markdown("- API quota het, thu lai sau it phut hoac doi API key")
             elif "timeout" in error.lower():
                 st.markdown("- Trang web load cham, thu lai sau")
-                st.markdown("- Kiem tra ket noi mang")
             elif "webreel" in error.lower():
                 st.markdown("- Kiem tra webreel da duoc build chua: `pnpm build`")
-                st.markdown("- Kiem tra bien WEBREEL_BIN trong .env")
+            elif "fpt" in error.lower() or "tts" in error.lower():
+                st.markdown("- Kiem tra FPT_TTS_API_KEY trong file .env")
+            elif "chrome" in error.lower() or "cdp" in error.lower():
+                st.markdown("- Kiem tra Chrome dang chay voi debug port: `start_chrome_debug.bat`")
             else:
                 st.markdown("- Thu kich ban don gian hon")
                 st.markdown("- Kiem tra API key con hieu luc")
@@ -299,60 +521,10 @@ with tab_create:
         and not st.session_state.is_generating
         and not st.session_state.error_msg
     ):
-        st.success("Video tao thanh cong! Xem o tab 'Ket qua'.")
+        st.success("Video tao thanh cong! Xem o tab Ket qua.")
 
 
-# ---- Tab 2: Preview actions ----
-with tab_preview:
-    st.subheader("Xem truoc cac buoc")
-    st.markdown("Kiem tra AI se lam gi truoc khi chay may tinh.")
-
-    preview_input = st.text_area(
-        "Nhap kich ban de phan tich:",
-        height=100,
-        key="preview_input",
-        placeholder="Mo google.com, go 'hello world', nhan Enter",
-    )
-
-    if st.button("Phan tich", key="btn_preview"):
-        if not preview_input.strip():
-            st.warning("Nhap kich ban truoc.")
-        elif not MOCK_MODE and not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GITHUB_TOKEN"):
-            st.error("Can GEMINI_API_KEY hoac GITHUB_TOKEN.")
-        else:
-            with st.spinner("Dang phan tich..."):
-                try:
-                    actions = get_parsed_preview(preview_input)
-                    st.session_state.preview_actions = actions
-                except Exception as e:
-                    st.error(f"Loi phan tich: {e}")
-
-    if st.session_state.preview_actions:
-        actions = st.session_state.preview_actions
-        st.success(f"Tim thay {len(actions)} buoc:")
-
-        for i, action in enumerate(actions, 1):
-            action_type = action.action.value if hasattr(action.action, "value") else action.action
-
-            with st.container(border=True):
-                col_num, col_detail = st.columns([1, 6])
-                with col_num:
-                    st.markdown(f"### {i}")
-                with col_detail:
-                    st.markdown(f"**`{action_type.upper()}`**")
-                    if action.url:
-                        st.markdown(f"URL: `{action.url}`")
-                    if action.target:
-                        st.markdown(f"Element: *{action.target}*")
-                    if action.text:
-                        st.markdown(f"Text: `{action.text}`")
-                    if action.key:
-                        st.markdown(f"Key: `{action.key}`")
-                    if action.direction:
-                        st.markdown(f"Huong: {action.direction}")
-
-
-# ---- Tab 3: Ket qua ----
+# ---- Tab 2: Results ----
 with tab_result:
     st.subheader("Video da tao")
 
@@ -373,9 +545,25 @@ with tab_result:
         with col_info:
             size_mb = Path(video_path).stat().st_size / 1024 / 1024
             st.metric("Kich thuoc", f"{size_mb:.1f} MB")
-            st.metric("Duong dan", Path(video_path).name)
+            st.metric("File", Path(video_path).name)
+
+            # Check for other output files
+            parent = Path(video_path).parent
+            raw_videos = list(parent.glob("*.mp4"))
+            if len(raw_videos) > 1:
+                st.caption(f"Thu muc output: {parent}")
+
+            # Show TTS script if available
+            tts_script_path = parent / "tts_script.json"
+            if tts_script_path.exists():
+                with st.expander("TTS Script (narrations)"):
+                    import json
+                    with open(tts_script_path, "r", encoding="utf-8") as f:
+                        script_data = json.load(f)
+                    for i, item in enumerate(script_data):
+                        st.markdown(f"**Narration {i}:** {item.get('text', '')}")
 
     elif video_path:
         st.warning(f"File video khong ton tai: {video_path}")
     else:
-        st.info("Chua co video. Tao video o tab 'Tao video'.")
+        st.info("Chua co video. Tao video o tab Tao video.")

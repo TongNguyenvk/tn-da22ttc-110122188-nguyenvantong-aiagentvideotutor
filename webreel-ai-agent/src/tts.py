@@ -20,8 +20,7 @@ def measure_audio_duration_ms(audio_path: Path) -> int:
     """
     Measure exact duration of an audio file in milliseconds.
 
-    Uses mutagen for MP3 files. Falls back to a rough estimate
-    based on file size if mutagen is not available.
+    Uses ffprobe for accurate duration measurement (more reliable than mutagen).
 
     Args:
         audio_path: Path to MP3/WAV audio file.
@@ -30,6 +29,29 @@ def measure_audio_duration_ms(audio_path: Path) -> int:
         Duration in milliseconds (integer).
     """
     audio_path = Path(audio_path)
+    
+    # Try ffprobe first (most accurate)
+    try:
+        import subprocess
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            duration_s = float(result.stdout.strip())
+            return int(duration_s * 1000)
+    except Exception as e:
+        print(f"  [measure_audio] ffprobe failed: {e}, trying mutagen...")
+    
+    # Fallback to mutagen
     try:
         from mutagen.mp3 import MP3
         audio = MP3(str(audio_path))
@@ -67,7 +89,7 @@ def generate_speech(
     voice: str = DEFAULT_VOICE,
     speed: str = "",
     api_key: str | None = None,
-    max_wait_sec: int = 60,
+    max_wait_sec: int = 90,
 ) -> AudioSegment:
     """
     Chuyen van ban thanh file MP3 dung FPT.AI TTS with retries.
@@ -101,7 +123,7 @@ def generate_speech(
     for attempt in range(max_retries):
         try:
             # Request TTS
-            response = requests.post(FPT_TTS_URL, headers=headers, data=text.encode("utf-8"), timeout=20)
+            response = requests.post(FPT_TTS_URL, headers=headers, data=text.encode("utf-8"), timeout=30)
             response.raise_for_status()
             data = response.json()
 
@@ -109,7 +131,7 @@ def generate_speech(
                 # Retry on busy/server errors
                 if data.get("error") in [429, 500, 1]:
                     print(f"  [TTS] FPT service busy (error {data.get('error')}). Retry {attempt+1}/{max_retries}...")
-                    time.sleep(2 * (attempt + 1))
+                    time.sleep(3 * (attempt + 1))
                     continue
                 raise RuntimeError(f"FPT TTS error: {data}")
 
@@ -117,13 +139,16 @@ def generate_speech(
             if not async_url:
                 raise RuntimeError(f"No async URL in response: {data}")
 
-            # Download MP3
+            # Download MP3 with exponential backoff polling
             start_time = time.time()
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Initial poll delay
-            time.sleep(2)
+            # FPT needs time to process. Longer texts need more time.
+            # Estimate: ~1s per 50 chars, minimum 3s
+            estimated_wait = max(3, len(text) // 50)
+            time.sleep(estimated_wait)
             
+            poll_interval = 2  # Start with 2s, increase on each 404
             last_poll_error = ""
             while time.time() - start_time < max_wait_sec:
                 try:
@@ -144,13 +169,15 @@ def generate_speech(
                         else:
                             last_poll_error = f"Processing... ({content_type})"
                     elif mp3_resp.status_code == 404:
-                        last_poll_error = "HTTP 404 (File not found or not ready)"
+                        last_poll_error = "HTTP 404 (File not ready)"
+                        # Increase poll interval on 404 (file still being generated)
+                        poll_interval = min(poll_interval + 1, 6)
                     else:
                         last_poll_error = f"HTTP {mp3_resp.status_code}"
-                except Exception as e:
+                except requests.exceptions.RequestException as e:
                     last_poll_error = str(e)
                 
-                time.sleep(2)
+                time.sleep(poll_interval)
             
             raise TimeoutError(f"Failed to download MP3 from {async_url} after {max_wait_sec}s. Last error: {last_poll_error}")
 

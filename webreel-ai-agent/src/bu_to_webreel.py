@@ -1,14 +1,22 @@
 """
-Parser: browser-use history -> webreel config JSON.
+Parser: browser-use history -> webreel config + tts_script.
 
-Chuyển đổi log hành động từ browser-use sang định dạng cấu hình
-webreel.config.json tuân thủ tuyệt đối schema v1.
+Returns TWO outputs in one pass:
+1. A schema-v1-compliant webreel config (no post-processing needed)
+2. A tts_script list for direct TTS generation
 
-RÀNG BUỘC TỐI THƯỢNG:
-- Webreel schema rất nghiêm ngặt, không cho phép key lạ
-- Chỉ map các action hợp lệ: navigate, click, type, pause, scroll, key
-- BẮT BUỘC BỎ QUA: done, và mọi action không hợp lệ
-- Không tạo trường _unmapped_action hay bất kỳ key tự ý nào
+This replaces both old bu_to_webreel.py AND ai_reviewer.py.
+
+SCHEMA V1 COMPLIANCE:
+- additionalProperties: false on EVERY step type
+- Only allowed keys per step type (no custom keys)
+- selector: string | string[] (array fallback supported)
+- stepClick/moveTo: requires either "text" or "selector"
+- stepPause: requires "action" + "ms", optional "description"/"label"
+- stepNavigate: requires "action" + "url"
+- stepType: requires "action" + "text"
+- stepKey: requires "action" + "key"
+- stepScroll: requires "action" (x/y/selector optional)
 """
 
 import re
@@ -18,74 +26,42 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Selector extraction (reused from bu_to_webreel.py, battle-tested)
+# ---------------------------------------------------------------------------
+
 def _extract_text_from_element(element_str: str | None) -> str | None:
-    """
-    Trích xuất text hiển thị từ chuỗi DOMInteractedElement.
-    
-    Args:
-        element_str: Chuỗi repr của DOMInteractedElement từ browser-use.
-    
-    Returns:
-        Text string hoặc None nếu không parse được.
-    """
     if not element_str or not isinstance(element_str, str):
         return None
-    
-    # Trích xuất ax_name (accessibility name - text hiển thị)
     ax_match = re.search(r"ax_name='([^']+)'", element_str)
     if ax_match:
         return ax_match.group(1)
-    
-    return None
-
-
-def _extract_coordinates_from_element(element_str: str | None) -> tuple[float, float] | None:
-    """
-    Trích xuất tọa độ (x, y) từ chuỗi DOMInteractedElement.
-    
-    Args:
-        element_str: Chuỗi repr của DOMInteractedElement từ browser-use.
-    
-    Returns:
-        Tuple (x, y) hoặc None nếu không parse được.
-    """
-    if not element_str or not isinstance(element_str, str):
-        return None
-    
-    # Trích xuất bounds=DOMRect(x=..., y=..., ...)
-    bounds_match = re.search(r"bounds=DOMRect\(x=([\d.]+),\s*y=([\d.]+)", element_str)
-    if bounds_match:
-        x = float(bounds_match.group(1))
-        y = float(bounds_match.group(2))
-        return (x, y)
-    
     return None
 
 
 def _extract_selector_from_element(element_str: str | None) -> str | list[str] | None:
     """
-    Trích xuất selector từ chuỗi DOMInteractedElement.
-    Trả về mảng fallback [xpath, css] để Webreel xử lý chính xác nhất.
+    Extract a schema-compliant selector from DOMInteractedElement string.
+    Returns string | string[] | None.
     """
     if not element_str or not isinstance(element_str, str):
         return None
 
-    # 1. Trích xuất attributes dict
+    # 1. Parse attributes
     attrs_match = re.search(r"attributes=\{([^}]+)\}", element_str)
     attrs: dict[str, str] = {}
     if attrs_match:
         pairs = re.findall(r"'([^']+)':\s*'([^']*)'", attrs_match.group(1))
         attrs = dict(pairs)
 
-    # 2. Trích xuất node_name (tag name)
+    # 2. Tag name
     tag_match = re.search(r"node_name='(\w+)'", element_str)
     tag = tag_match.group(1).lower() if tag_match else ""
 
-    # 3. Trích xuất xpath - FIX DOUBLE SLASH ISSUE
+    # 3. XPath
     xpath_match = re.search(r"x_path='([^']+)'", element_str)
     if xpath_match:
         raw_xpath = xpath_match.group(1)
-        # Normalize: ensure single leading slash for absolute path
         if raw_xpath.startswith('/'):
             xpath_selector = f"xpath={raw_xpath}"
         else:
@@ -95,270 +71,237 @@ def _extract_selector_from_element(element_str: str | None) -> str | list[str] |
 
     css_selector = None
 
-    # Ưu tiên 1: #id
+    # Priority 1: #id (skip dynamic IDs)
     if attrs.get("id"):
         dynamic_id_pattern = r"(:r\d+:|_r_\d+_|^r\d+$|-[0-9a-f]{5,}$)"
-        import re as regex_lib
-        if not regex_lib.search(dynamic_id_pattern, attrs["id"]):
+        if not re.search(dynamic_id_pattern, attrs["id"]):
             css_selector = f"#{attrs['id']}"
 
-    # Ưu tiên 2: SPECIAL HANDLING FOR <a> TAGS
-    # Links are unstable with absolute XPath, prefer attribute selectors
+    # Priority 2: <a> tags -> href attribute selector
     if not css_selector and tag == "a" and attrs.get("href"):
         href = attrs["href"]
         try:
             from urllib.parse import unquote
-            # Remove query params and hash for stability
             href_clean = unquote(href).split('?')[0].split('#')[0]
-            
-            # Use "starts with" selector for better matching
             if href_clean and href_clean != '/':
                 css_selector = f"a[href^='{href_clean}']"
             elif attrs.get("title"):
                 css_selector = f"a[title='{attrs['title']}']"
             else:
-                # Fallback to exact match
                 css_selector = f"a[href='{unquote(href)}']"
-        except:
+        except Exception:
             css_selector = f"a[href='{href}']"
 
-    # Ưu tiên 3: [name=...]
+    # Priority 3: [name=...]
     if not css_selector and attrs.get("name") and tag in ("input", "textarea", "select", "button"):
         css_selector = f"{tag}[name='{attrs['name']}']"
 
-    # Ưu tiên 4: [aria-label=...]
+    # Priority 4: [aria-label=...]
     if not css_selector and attrs.get("aria-label"):
         css_selector = f"{tag}[aria-label='{attrs['aria-label']}']"
 
-    # Ưu tiên 5: [role=...][type=...]
+    # Priority 5: [role=...][type=...]
     if not css_selector and attrs.get("role") and attrs.get("type"):
         css_selector = f"{tag}[role='{attrs['role']}'][type='{attrs['type']}']"
 
-    # Ưu tiên 6: fallback cơ bản
-    if not css_selector and tag:
+    # Priority 6: tag fallback (but skip generic tags like div/span)
+    if not css_selector and tag and tag not in ("div", "span", "section", "article", "main", "header", "footer"):
         css_selector = tag
 
-    # Nếu có cả xpath và css, trả về mảng fallback. Nếu chỉ có 1 trong 2, trả về chuỗi.
+    # Return array fallback [xpath, css] or single string
     if xpath_selector and css_selector:
-        # Nếu css chỉ là tag (ví dụ "button"), xpath sẽ cứu nguy
         return [xpath_selector, css_selector]
     elif xpath_selector:
         return xpath_selector
     elif css_selector:
         return css_selector
 
-    return "*"
+    # Return None instead of "*" to signal "no usable selector"
+    return None
 
 
-def _xpath_to_css(xpath: str) -> str | None:
-    """
-    Chuyển XPath đơn giản sang CSS selector.
-    
-    Ví dụ: 'html/body/div[2]/form/input[1]' 
-           -> 'html > body > div:nth-of-type(2) > form > input:nth-of-type(1)'
-    """
-    if not xpath:
-        return None
+# ---------------------------------------------------------------------------
+# Main parser
+# ---------------------------------------------------------------------------
 
-    parts = xpath.strip("/").split("/")
-    css_parts = []
-
-    for part in parts:
-        idx_match = re.match(r"(\w+)\[(\d+)\]", part)
-        if idx_match:
-            tag = idx_match.group(1)
-            index = idx_match.group(2)
-            css_parts.append(f"{tag}:nth-of-type({index})")
-        else:
-            css_parts.append(part)
-
-    return " > ".join(css_parts)
-
-
-def _has_autofocus(element_str: str | None) -> bool:
-    """
-    Kiểm tra xem element có attribute autofocus không.
-    
-    Args:
-        element_str: Chuỗi repr của DOMInteractedElement
-    
-    Returns:
-        True nếu element có autofocus
-    """
-    if not element_str or not isinstance(element_str, str):
-        return False
-    
-    return "'autofocus': ''" in element_str or '"autofocus": ""' in element_str
-
-
-def convert_to_webreel_config(
+def convert_history_to_config_and_script(
     history_data: dict[str, Any],
     video_name: str = "demo",
-    **kwargs,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """
-    Chuyển đổi log browser-use sang webreel JSON config theo schema v1 nghiêm ngặt.
+    Parse browser-use history into a webreel config AND a tts_script list.
 
-    QUY TẮC MAP HÀNH ĐỘNG:
-    
-    1. Nhóm Hợp Lệ (chuyển đổi và đưa vào steps):
-       - navigate: {"action": "navigate", "url": "<url>"}
-       - click: {"action": "click", "selector": "<selector>"}
-       - input: {"action": "type", "selector": "<selector>", "text": "<text>"}
-       - wait: {"action": "pause", "ms": <milliseconds>}
-       - send_keys: {"action": "key", "key": "<key>"}
-       - scroll: {"action": "scroll", "y": <pixels>} hoặc {"action": "scroll", "selector": "<selector>"}
-       - extract: Thêm scroll actions để hiển thị nội dung trong video
-    
-    2. Nhóm BẮT BUỘC BỎ QUA (ignore/continue):
-       - done: Chỉ là cờ báo hiệu hoàn thành
-       - write_file: Không có tương đương trong webreel
-       - Mọi action khác không nằm trong nhóm hợp lệ
-    
-    Args:
-        history_data: Dict chứa browser-use history với keys:
-                      - urls: list URL đã truy cập
-                      - model_actions: list các action đã thực hiện
-        video_name: Tên video trong config (default: "demo")
-    
     Returns:
-        Dict config webreel tuân thủ schema v1
+        (config, tts_script) where:
+        - config: schema-v1-compliant webreel JSON config
+        - tts_script: list of {"text": "...", "narration_index": i} dicts
     """
     steps: list[dict[str, Any]] = []
-    
-    # Lấy URL đầu tiên để navigate đến
+    tts_script: list[dict[str, str]] = []
+
+    # Get start URL
     start_url = ""
     urls = history_data.get("urls", [])
     if urls:
-        # Bỏ qua about:blank, lấy URL thực đầu tiên
         for url in urls:
             if url and url != "about:blank":
                 start_url = url
                 break
-        # Fallback nếu tất cả đều là about:blank
         if not start_url and urls:
             start_url = urls[0]
-    
-    # Kiểm tra xem có phải Google search không
+
     is_google_search = "google.com" in start_url.lower() if start_url else False
-    
-    # Bắt đầu từ URL đầu tiên (không dùng about:blank vì có thể gây timeout)
-    # Thêm navigate action nếu có URL khác sau đó
+
+    # Initial page load pause
     if start_url and start_url != "about:blank":
-        # Add initial pause to show the page after loading
         steps.append({
             "action": "pause",
             "ms": 2000,
             "description": "Wait for initial page to load"
         })
-    
-    # Duyệt qua model_actions
+
     actions = history_data.get("model_actions", [])
-    
-    # Track if we already navigated to start_url
     navigated_to_start = False
-    
-    # Tracking for deduplicating consecutive inputs
     last_input_selector = None
     last_input_text = None
+    narration_counter = 0
+    last_narration_text = ""  # For deduplication
 
-    # Track current narration from save_narration tool
-    current_narration = None
-    
     for i, action_item in enumerate(actions):
-        # 0. HANDLE CUSTOM save_narration ACTION
-        # Convert to a standalone pause step so the audio plays AFTER arriving at the page
+
+        # ===== SAVE_NARRATION -> standalone pause + tts_script entry =====
         if "save_narration" in action_item:
             narration_data = action_item["save_narration"]
             text = narration_data.get("text", "") if isinstance(narration_data, dict) else str(narration_data)
-            logger.info(f"[Parser] Converting save_narration to standalone pause: {text[:50]}...")
-            steps.append({
-                "action": "pause",
-                "ms": 1000,
-                "description": text
-            })
+            if text.strip():
+                # Dedup: skip if >80% similar to the previous narration
+                clean_text = text.strip()
+                if last_narration_text:
+                    overlap = len(set(clean_text.split()) & set(last_narration_text.split()))
+                    total = max(len(set(clean_text.split())), 1)
+                    similarity = overlap / total
+                    if similarity > 0.8:
+                        logger.info(f"[V3 Parser] Skipping duplicate narration (similarity={similarity:.0%}): {clean_text[:50]}...")
+                        continue
+
+                idx = narration_counter
+                narration_counter += 1
+                last_narration_text = clean_text
+
+                # Add to tts_script for Phase 3
+                tts_script.append({
+                    "text": clean_text,
+                    "narration_index": idx,
+                })
+
+                # Create a placeholder pause in the config (ms will be replaced by injector)
+                steps.append({
+                    "action": "pause",
+                    "ms": 1000,
+                    "description": f"[NARRATION:{idx}] {clean_text}"
+                })
+
+                logger.info(f"[V3 Parser] Narration {idx}: {clean_text[:50]}...")
             continue
 
-        # Lấy thông tin element
+        # ===== Get element info =====
         element_str = str(action_item.get("interacted_element", ""))
-        
-        # 1. NAVIGATE
+
+        # ===== NAVIGATE =====
         if "navigate" in action_item:
             nav_data = action_item["navigate"]
             url = nav_data.get("url", "") if isinstance(nav_data, dict) else str(nav_data)
-            
-            # Bỏ qua navigate đầu tiên nếu nó giống start_url
+
             if url and (url != start_url or navigated_to_start):
                 steps.append({
                     "action": "navigate",
                     "url": url,
                     "description": f"Navigate to {url}"
                 })
-                # Add pause after navigation
                 steps.append({
                     "action": "pause",
-                    "ms": 2000,
+                    "ms": 3000,
                     "description": "Wait for page to load"
                 })
             elif url == start_url:
                 navigated_to_start = True
-        
-        # 2. CLICK
+
+        # ===== CLICK =====
         elif "click" in action_item:
             selector = _extract_selector_from_element(element_str)
-            
-            if selector:
-                # Extract text label for description
+            if selector is not None:  # Explicit None check (skip if no usable selector)
                 element_text = _extract_text_from_element(element_str)
                 click_desc = f"Click on {element_text}" if element_text else "Click element"
+
+                # Check if this is a checkbox input (type="checkbox")
+                is_checkbox = False
+                if "type='checkbox'" in element_str or 'type="checkbox"' in element_str:
+                    is_checkbox = True
+
+                if is_checkbox:
+                    # For checkbox: use Space key instead of click to avoid double-click issue
+                    steps.append({
+                        "action": "moveTo",
+                        "selector": selector,
+                    })
+                    steps.append({
+                        "action": "key",
+                        "key": " ",
+                        "target": selector,
+                        "label": "✓",
+                        "description": click_desc
+                    })
+                else:
+                    # Normal click: moveTo before click for natural cursor animation
+                    steps.append({
+                        "action": "moveTo",
+                        "selector": selector,
+                    })
+                    steps.append({
+                        "action": "click",
+                        "selector": selector,
+                        "description": click_desc
+                    })
                 
-                # Add explicit click
-                steps.append({
-                    "action": "click",
-                    "selector": selector,
-                    "description": click_desc
-                })
-                # Add longer pause after click to show the result page
+                # Wait for result
                 steps.append({
                     "action": "pause",
-                    "ms": 5000,
+                    "ms": 2000,
                     "description": "Wait after click"
                 })
-        
-        # 3. INPUT (type text)
+            else:
+                logger.warning(f"[V3 Parser] Skipping click: no valid selector found")
+
+        # ===== INPUT (type text) =====
         elif "input" in action_item:
             inp_data = action_item["input"]
             text = inp_data.get("text", "") if isinstance(inp_data, dict) else ""
             selector = _extract_selector_from_element(element_str)
-            
+
             if text and selector:
                 clean_text = text.replace('\n', '')
-                
-                # Deduplicate consecutive input actions
+
+                # Deduplicate
                 if selector == last_input_selector and clean_text == last_input_text:
                     continue
-                    
                 last_input_selector = selector
                 last_input_text = clean_text
-                
-                steps.append({
-                    "action": "pause",
-                    "ms": 500
-                })
-                
+
+                # Focus: click on input first
                 steps.append({
                     "action": "click",
-                    "selector": selector
+                    "selector": selector,
+                    "description": "Focus input field"
                 })
                 steps.append({
                     "action": "pause",
-                    "ms": 300
+                    "ms": 300,
                 })
-                
-                # Check if text contains \n, indicating an Enter press
+
+                # Type
                 has_enter = '\n' in text
                 clean_text = text.replace('\n', '')
-                
+
                 if clean_text:
                     steps.append({
                         "action": "type",
@@ -366,129 +309,105 @@ def convert_to_webreel_config(
                         "charDelay": 50,
                         "description": f"Type '{clean_text[:30]}'"
                     })
-                
-                # Check if we need to press Enter from the newline OR from the next action
+
+                # Handle Enter
                 should_press_enter = has_enter
-                
-                # ENHANCEMENT: Check if next action is send_keys with Enter
-                # If yes, handle based on website type
                 if not should_press_enter and i + 1 < len(actions):
                     next_action = actions[i + 1]
                     if "send_keys" in next_action:
                         keys = next_action.get("send_keys", {}).get("keys", "")
                         if keys.lower() == "enter":
                             should_press_enter = True
-                            
+
                 if should_press_enter:
-                    # Add pause after typing to let autocomplete dropdown disappear
-                    steps.append({
-                        "action": "pause",
-                        "ms": 1000
-                    })
-                    
-                    # Special handling for Google search
+                    steps.append({"action": "pause", "ms": 1000})
                     if is_google_search:
-                        # Add moveTo before click to show cursor movement to search button
-                        steps.append({
-                            "action": "moveTo",
-                            "selector": "input[name='btnK']"
-                        })
-                        # Add click on Google search button
-                        steps.append({
-                            "action": "click",
-                            "selector": "input[name='btnK']"
-                        })
+                        steps.append({"action": "moveTo", "selector": "input[name='btnK']"})
+                        steps.append({"action": "click", "selector": "input[name='btnK']"})
                     else:
-                        # For other sites, just press Enter
-                        steps.append({
-                            "action": "key",
-                            "key": "Enter",
-                            "target": selector
-                        })
-                    
-                    # Pause to let results load and display
-                    steps.append({
-                        "action": "pause",
-                        "ms": 4000
-                    })
-        
-        # 4. WAIT (chuyển giây -> milliseconds)
+                        steps.append({"action": "key", "key": "Enter", "target": selector})
+                    steps.append({"action": "pause", "ms": 4000})
+
+        # ===== SELECT_DROPDOWN =====
+        elif "select_dropdown" in action_item:
+            dropdown_data = action_item["select_dropdown"]
+            value = dropdown_data.get("text", "") if isinstance(dropdown_data, dict) else str(dropdown_data)
+            selector = _extract_selector_from_element(element_str)
+
+            if value and selector:
+                # Use webreel's native select action
+                steps.append({
+                    "action": "select",
+                    "selector": selector,
+                    "value": value,
+                    "description": f"Select '{value}' from dropdown"
+                })
+                steps.append({
+                    "action": "pause",
+                    "ms": 300,
+                })
+
+        # ===== WAIT =====
         elif "wait" in action_item:
             wait_data = action_item["wait"]
             seconds = wait_data.get("seconds", 1) if isinstance(wait_data, dict) else 1
             ms = int(float(seconds) * 1000)
-            # Schema webreel: pause step dùng key "ms" không phải "value"
-            steps.append({
-                "action": "pause",
-                "ms": ms
-            })
-        
-        # 5. SCROLL
+            steps.append({"action": "pause", "ms": ms})
+
+        # ===== SCROLL =====
         elif "scroll" in action_item:
             scroll_data = action_item["scroll"]
             if isinstance(scroll_data, dict):
-                # Scroll by amount
-                if "amount" in scroll_data:
-                    amount = scroll_data["amount"]
-                    steps.append({
-                        "action": "scroll",
-                        "y": amount
-                    })
-                    steps.append({
-                        "action": "pause",
-                        "ms": 1000
-                    })
-                # Scroll to element
+                # browser-use format: {down: bool, pages: float, index: int|None}
+                if "pages" in scroll_data:
+                    pages = float(scroll_data.get("pages", 1.0))
+                    down = scroll_data.get("down", True)
+                    # Convert pages to pixels (1 page = viewport height = 1080px)
+                    pixels = int(pages * 1080)
+                    if not down:
+                        pixels = -pixels
+                    steps.append({"action": "scroll", "y": pixels})
+                    steps.append({"action": "pause", "ms": 1500,
+                                  "description": f"Wait after scroll {'down' if down else 'up'} {pages} pages"})
+                    logger.info(f"[V3 Parser] Scroll: {'down' if down else 'up'} {pages} pages -> {pixels}px")
+                # Legacy fallback: {amount: int}
+                elif "amount" in scroll_data:
+                    steps.append({"action": "scroll", "y": scroll_data["amount"]})
+                    steps.append({"action": "pause", "ms": 1000})
+                # Selector-based scroll
                 elif "selector" in scroll_data:
-                    selector = scroll_data["selector"]
-                    steps.append({
-                        "action": "scroll",
-                        "selector": selector
-                    })
-                    steps.append({
-                        "action": "pause",
-                        "ms": 1000
-                    })
-        
-        # Đặc biệt: Xử lý evaluate (chạy JS) nếu nó là để click
-        elif "evaluate" in action_item:
-            code = action_item.get("evaluate", {}).get("code", "")
-            if "click()" in code:
-                import re
-                match = re.search(r"document\.querySelector\(['\"]([^'\"]+)['\"]\)", code)
-                if match:
-                    selector = match.group(1)
-                    steps.append({
-                        "action": "moveTo",
-                        "selector": selector
-                    })
-                    steps.append({
-                        "action": "click",
-                        "selector": selector
-                    })
-                    steps.append({
-                        "action": "pause",
-                        "ms": 5000
-                    })
-        
-        # 6. EXTRACT: Thêm scroll để xem nội dung
-        elif "extract" in action_item:
-            # Khi extract content, thêm một số scroll actions để video hiển thị nội dung
-            # Scroll down 3 lần để xem nội dung trang
-            for _ in range(3):
-                steps.append({
-                    "action": "scroll",
-                    "y": 500
-                })
-                steps.append({
-                    "action": "pause",
-                    "ms": 2000
-                })
-        
-        # 7. BỎ QUA: done, write_file, và mọi action khác
-        # Không làm gì cả, continue
+                    steps.append({"action": "scroll", "selector": scroll_data["selector"]})
+                    steps.append({"action": "pause", "ms": 1000})
+                # Bare direction fallback: {down: bool} without pages
+                elif "down" in scroll_data:
+                    down = scroll_data.get("down", True)
+                    pixels = 1080 if down else -1080
+                    steps.append({"action": "scroll", "y": pixels})
+                    steps.append({"action": "pause", "ms": 1500})
 
-    # Xây dựng config cuối cùng
+        # ===== SEND_KEYS (standalone, not following input) =====
+        elif "send_keys" in action_item:
+            keys_data = action_item["send_keys"]
+            keys = keys_data.get("keys", "") if isinstance(keys_data, dict) else str(keys_data)
+            if keys:
+                steps.append({"action": "key", "key": keys})
+
+        # ===== EXTRACT -> scroll to show content =====
+        elif "extract" in action_item:
+            for _ in range(3):
+                steps.append({"action": "scroll", "y": 500})
+                steps.append({"action": "pause", "ms": 2000})
+
+        # ===== done, write_file, etc. -> SKIP =====
+
+    # Add tail pause to prevent video cut-off
+    steps.append({
+        "action": "pause",
+        "ms": 5000,
+        "description": "Final tail pause"
+    })
+
+    # Build config (100% schema v1 compliant)
     config: dict[str, Any] = {
         "$schema": "https://webreel.dev/schema/v1.json",
         "videos": {
@@ -498,12 +417,11 @@ def convert_to_webreel_config(
                     "width": 1920,
                     "height": 1080
                 },
-                "zoom": 1.5,
                 "defaultDelay": 300,
                 "steps": steps
             }
         }
     }
 
-    return config
-
+    logger.info(f"[V3 Parser] Generated {len(steps)} steps, {len(tts_script)} narration segments")
+    return config, tts_script

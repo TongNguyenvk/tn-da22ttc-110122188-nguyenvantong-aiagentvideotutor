@@ -104,14 +104,36 @@ def find_action_groups(trace: list[TraceStep]) -> list[TraceStep]:
 
 
 def _get_audio_duration_ms(audio_path: Path) -> int:
-    """Get audio duration in ms using mutagen."""
+    """Get audio duration in ms using ffprobe (most accurate)."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            duration_s = float(result.stdout.strip())
+            return int(duration_s * 1000)
+    except Exception:
+        pass
+    
+    # Fallback: mutagen
     try:
         from mutagen.mp3 import MP3
         audio = MP3(str(audio_path))
         return int(audio.info.length * 1000)
     except Exception:
         pass
-    # Fallback: estimate from file size (MP3 ~128kbps)
+    
+    # Last resort: estimate from file size (MP3 ~128kbps)
     size = audio_path.stat().st_size
     return int(size * 8 / 128)
 
@@ -150,13 +172,14 @@ def compute_narration_timestamps(
         print(f"[TraceComposer] Audio {af.name}: {dur}ms ({dur/1000:.1f}s)")
 
     # Build a lookup for steps by their designated tts_index
-    # Format in description: "[TTS:idx] Original text"
+    # Format in description: "[TTS:idx] ..." or "[NARRATION:idx] ..."
     tts_indexed_steps: dict[int, TraceStep] = {}
     import re
     
     for step in trace:
         desc = step.description or ""
-        match = re.search(r"\[TTS:(\d+)\]", desc)
+        # Match both [TTS:idx] and [NARRATION:idx] formats
+        match = re.search(r"\[(?:TTS|NARRATION):(\d+)\]", desc)
         if match:
             idx = int(match.group(1))
             tts_indexed_steps[idx] = step
@@ -283,16 +306,23 @@ def compose_video_from_trace(
             continue
             
         label = f"a{idx}"
-        # Use :all=1 for adelay to support both mono and stereo tracks correctly
-        filter_parts.append(f"[{current_input_idx}:a]adelay=delays={ts}:all=1[{label}]")
+        # Create silence padding + audio using concat
+        # anullsrc creates silence, duration in seconds
+        silence_duration_s = ts / 1000.0
+        filter_parts.append(
+            f"anullsrc=channel_layout=mono:sample_rate=24000:duration={silence_duration_s}[silence{idx}]"
+        )
+        filter_parts.append(
+            f"[silence{idx}][{current_input_idx}:a]concat=n=2:v=0:a=1[{label}]"
+        )
         mix_inputs.append(f"[{label}]")
         current_input_idx += 1
 
     mix_labels = "".join(mix_inputs)
     num_inputs = len(mix_inputs)
-    # amix with normalize=0 prevents volume dropping, volume=1.5 gives a slight boost for clarity
+    # amix with dropout_transition=0 prevents crossfade, normalize=0 prevents volume drop
     filter_parts.append(
-        f"{mix_labels}amix=inputs={num_inputs}:duration=longest:normalize=0,volume=1.5[aout]"
+        f"{mix_labels}amix=inputs={num_inputs}:duration=longest:dropout_transition=0:normalize=0,volume=1.5[aout]"
     )
 
     filter_complex = ";".join(filter_parts)
@@ -308,6 +338,8 @@ def compose_video_from_trace(
     ])
 
     print(f"\n[TraceComposer] Running ffmpeg...")
+    print(f"[TraceComposer] Command: {' '.join(cmd)}")
+    print(f"[TraceComposer] Filter complex: {filter_complex}")
     result = subprocess.run(
         cmd,
         capture_output=True,

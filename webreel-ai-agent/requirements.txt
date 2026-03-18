@@ -19,5 +19,8 @@ Pillow==12.1.0
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 
+# Audio duration measurement
+mutagen>=1.47.0
+
 # Video processing (install from git for Pillow 12 support)
 moviepy @ git+https://github.com/Zulko/moviepy.git@master
