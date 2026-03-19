@@ -127,6 +127,7 @@ def _extract_selector_from_element(element_str: str | None) -> str | list[str] |
 def convert_history_to_config_and_script(
     history_data: dict[str, Any],
     video_name: str = "demo",
+    cdp_url: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """
     Parse browser-use history into a webreel config AND a tts_script list.
@@ -408,18 +409,24 @@ def convert_history_to_config_and_script(
     })
 
     # Build config (100% schema v1 compliant)
+    video_config: dict[str, Any] = {
+        "url": start_url,
+        "viewport": {
+            "width": 1920,
+            "height": 1080
+        },
+        "defaultDelay": 300,
+        "steps": steps
+    }
+    
+    # Add cdpUrl if provided
+    if cdp_url:
+        video_config["cdpUrl"] = cdp_url
+    
     config: dict[str, Any] = {
         "$schema": "https://webreel.dev/schema/v1.json",
         "videos": {
-            video_name: {
-                "url": start_url,
-                "viewport": {
-                    "width": 1920,
-                    "height": 1080
-                },
-                "defaultDelay": 300,
-                "steps": steps
-            }
+            video_name: video_config
         }
     }
 

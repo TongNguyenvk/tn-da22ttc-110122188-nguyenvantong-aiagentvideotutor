@@ -41,11 +41,11 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str) 
     logger.info("=" * 80)
 
     # Prune non-schema properties before saving to satisfy Webreel's strict JSON validation
+    # NOTE: cdpUrl is a VALID schema property, so we keep it
     import copy
     clean_config = copy.deepcopy(config)
     for v_name, v_cfg in clean_config.get("videos", {}).items():
-        if "cdpUrl" in v_cfg:
-            del v_cfg["cdpUrl"]
+        # Remove only custom properties that are NOT part of schema
         for step in v_cfg.get("steps", []):
             if "tts_index" in step:
                 del step["tts_index"]

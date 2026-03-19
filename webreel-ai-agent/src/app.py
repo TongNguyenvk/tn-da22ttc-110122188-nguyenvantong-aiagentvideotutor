@@ -22,8 +22,40 @@ load_dotenv()
 
 # Import V3 pipeline
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from run_pipeline import run_pipeline_v3, CDP_URL
+from run_pipeline import run_pipeline_v3, CDP_URL, set_stop_flag
 from src.webreel_runner import OUTPUT_DIR
+
+
+# ==============================================================================
+# Constants & Paths
+# ==============================================================================
+HISTORY_FILE = OUTPUT_DIR / "video_history.json"
+
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+def _load_history() -> list:
+    """Load video history from JSON file."""
+    if HISTORY_FILE.exists():
+        try:
+            import json
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def _save_history(history: list):
+    """Save video history to JSON file."""
+    try:
+        import json
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Failed to save history: {e}")
 
 
 # ==============================================================================
@@ -39,24 +71,6 @@ st.set_page_config(
 # ==============================================================================
 # Constants
 # ==============================================================================
-EXAMPLE_SCRIPTS = {
-    "E-Learning Slides": (
-        "Vào http://127.0.0.1:5500/webreel-ai-agent/test-cases/"
-        "microservices-elearning.html đọc nội dung trong trang "
-        "sau đó ấn tiếp theo cho tới khi hoàn thành bài học kết thúc."
-    ),
-    "Tìm kiếm Google": (
-        "Vào google.com tìm kiếm 'lập trình Python cho người mới' "
-        "và dừng lại khi thấy kết quả"
-    ),
-    "YouTube": (
-        "Vào youtube.com tìm kiếm 'Python programming' "
-        "và ấn vào video đầu tiên"
-    ),
-    "VnExpress": "Mở vnexpress.net, click vào bài viết tin tức đầu tiên",
-    "GitHub": "Mở github.com, tìm kiếm 'react' và click vào repo đầu tiên",
-}
-
 TTS_VOICES_EDGE = {
     "vi-VN-HoaiMyNeural": "Nữ Hoài My (Edge)",
     "vi-VN-NamMinhNeural": "Nam Nam Minh (Edge)",
@@ -93,18 +107,50 @@ def _slugify(text: str) -> str:
 def _init_session():
     """Initialize session state defaults."""
     defaults = {
-        "history": [],
+        "history": _load_history(),
         "video_path": None,
         "is_generating": False,
         "progress_step": 0,
         "progress_total": len(PIPELINE_STEPS),
         "progress_msg": "",
-        "live_logs": [],
         "error_msg": None,
+        "pipeline_thread": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+class PipelineProgress:
+    """Thread-safe progress tracker."""
+    def __init__(self):
+        self.step = 0
+        self.msg = ""
+        self.logs = []
+        self.last_phase = 0
+        self.done = False
+        self.error = None
+        self.video_path = None
+        self.stop_event = threading.Event()
+        
+    def update(self, step: int, msg: str):
+        self.step = step
+        self.msg = msg
+        
+    def add_log(self, log: str):
+        self.logs.append(log)
+        if len(self.logs) > 100:
+            self.logs = self.logs[-100:]
+    
+    def request_stop(self):
+        """Request pipeline to stop."""
+        self.stop_event.set()
+        self.done = True
+        self.error = "Đã dừng bởi người dùng"
+    
+    def should_stop(self) -> bool:
+        """Check if pipeline should stop."""
+        return self.stop_event.is_set()
 
 
 def _run_pipeline_thread(
@@ -115,31 +161,78 @@ def _run_pipeline_thread(
     tts_engine: str,
     padding_ms: int,
     cdp_url: str = CDP_URL,
+    progress: PipelineProgress = None,
 ):
-    """Run V3 pipeline in a background thread."""
+    """Run V3 pipeline in a background thread with progress tracking."""
     try:
-        # Intercept stdout/stderr to capture logs
-        class LogCapturer:
-            def __init__(self, original):
-                self.original = original
-            def write(self, message):
-                self.original.write(message)
-                if message.strip():
-                    st.session_state.live_logs.append(message.strip())
-                    if len(st.session_state.live_logs) > 100:
-                        st.session_state.live_logs = st.session_state.live_logs[-100:]
-            def flush(self):
-                self.original.flush()
-
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = LogCapturer(old_stdout)
-        sys.stderr = LogCapturer(old_stderr)
+        # Check if stopped before starting
+        if progress and progress.done:
+            logger.info("Pipeline stopped before starting")
+            return
+            
+        # Add custom logging handler to capture phase changes
+        import logging
+        
+        class ProgressLogHandler(logging.Handler):
+            def __init__(self, progress_tracker):
+                super().__init__()
+                self.progress = progress_tracker
+                
+            def emit(self, record):
+                try:
+                    # Check if stopped
+                    if self.progress and self.progress.should_stop():
+                        return
+                        
+                    msg = self.format(record)
+                    
+                    # Detect phase changes from log messages
+                    if "Phase 1: The Scout" in msg:
+                        if self.progress.last_phase < 1:
+                            self.progress.update(1, "The Scout - Đang thu thập dữ liệu từ web...")
+                            self.progress.last_phase = 1
+                    elif "Phase 2: The Parser" in msg:
+                        if self.progress.last_phase < 2:
+                            self.progress.update(2, "The Parser - Đang phân tích và tạo config...")
+                            self.progress.last_phase = 2
+                    elif "Phase 3: Ground-Truth TTS" in msg:
+                        if self.progress.last_phase < 3:
+                            self.progress.update(3, "Ground-Truth TTS - Đang tạo giọng nói...")
+                            self.progress.last_phase = 3
+                    elif "Phase 4: The Injector" in msg:
+                        if self.progress.last_phase < 4:
+                            self.progress.update(4, "The Injector - Đang chèn audio vào timeline...")
+                            self.progress.last_phase = 4
+                    elif "Phase 5: The Execution" in msg:
+                        if self.progress.last_phase < 5:
+                            self.progress.update(5, "The Execution - Đang quay video...")
+                            self.progress.last_phase = 5
+                    elif "Phase 6: The Composer" in msg:
+                        if self.progress.last_phase < 6:
+                            self.progress.update(6, "The Composer - Đang ghép video và audio...")
+                            self.progress.last_phase = 6
+                    elif "V3 PIPELINE COMPLETED" in msg:
+                        self.progress.update(6, "Hoàn thành!")
+                except Exception:
+                    pass
+        
+        # Add handler to root logger
+        handler = ProgressLogHandler(progress)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         try:
+            if progress:
+                progress.update(1, "Đang khởi động pipeline...")
+            
+            # Check if stopped before running
+            if progress and progress.should_stop():
+                logger.info("Pipeline stopped before execution")
+                return
+            
             video_path = loop.run_until_complete(run_pipeline_v3(
                 task=user_input,
                 video_name=video_name,
@@ -148,31 +241,40 @@ def _run_pipeline_thread(
                 tts_voice=tts_voice,
                 tts_engine=tts_engine,
                 padding_ms=padding_ms,
+                progress=progress,
             ))
         finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
+            root_logger.removeHandler(handler)
 
-        st.session_state.video_path = str(video_path) if video_path else None
-        st.session_state.history.insert(0, {
-            "script": user_input,
-            "path": str(video_path) if video_path else None,
-            "name": video_name,
-            "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
-            "has_tts": enable_tts,
-            "engine": tts_engine,
-        })
-        st.session_state.error_msg = None
+        # Check if stopped after completion
+        if progress and progress.should_stop():
+            logger.info("Pipeline was stopped, ignoring results")
+            return
+
+        # Store results in progress object
+        if progress:
+            progress.video_path = str(video_path) if video_path else None
+            progress.error = None
+            progress.done = True
+            progress.history_item = {
+                "script": user_input,
+                "path": str(video_path) if video_path else None,
+                "name": video_name,
+                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                "has_tts": enable_tts,
+                "engine": tts_engine,
+            }
 
     except Exception as exc:
         import traceback
-        st.session_state.error_msg = f"{exc}\n\n{traceback.format_exc()}"
-        st.session_state.video_path = None
-
-    finally:
-        st.session_state.is_generating = False
-        st.session_state.progress_step = 0
-        st.session_state.progress_msg = ""
+        if progress:
+            # Check if it's a stop-related error
+            if progress.done and progress.error:
+                logger.info("Pipeline stopped, ignoring exception")
+                return
+            progress.error = f"{exc}\n\n{traceback.format_exc()}"
+            progress.video_path = None
+            progress.done = True
 
 
 # ==============================================================================
@@ -206,29 +308,94 @@ st.markdown("""
         color: white !important;
     }
 
+    /* Light mode styles */
     .step-item {
-        padding: 10px 16px;
-        margin: 6px 0;
-        border-radius: 6px;
-        font-size: 14px;
-        border-left: 3px solid transparent;
-        transition: all 0.2s;
-    }
-    .step-done {
-        background: rgba(16, 185, 129, 0.15);
-        color: var(--success-green);
-        border-left-color: var(--success-green);
-    }
-    .step-active {
-        background: rgba(245, 158, 11, 0.15);
-        color: var(--warning-orange);
-        border-left-color: var(--warning-orange);
+        padding: 12px 18px;
+        margin: 8px 0;
+        border-radius: 8px;
+        font-size: 15px;
         font-weight: 500;
+        border-left: 4px solid transparent;
+        transition: all 0.3s;
+        display: flex;
+        align-items: center;
+        gap: 12px;
     }
+    
+    .step-item::before {
+        font-size: 20px;
+        min-width: 24px;
+        text-align: center;
+    }
+    
+    .step-done {
+        background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.05));
+        color: #059669;
+        border-left-color: #10b981;
+    }
+    .step-done::before {
+        content: "✓";
+        color: #10b981;
+    }
+    
+    .step-active {
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(59, 130, 246, 0.1));
+        color: #2563eb;
+        border-left-color: #3b82f6;
+        animation: pulse 2s ease-in-out infinite;
+    }
+    .step-active::before {
+        content: "▶";
+        color: #3b82f6;
+    }
+    
     .step-pending {
-        background: rgba(128, 128, 128, 0.1);
-        color: rgba(128, 128, 128, 0.7);
-        border-left-color: rgba(128, 128, 128, 0.3);
+        background: rgba(156, 163, 175, 0.08);
+        color: #6b7280;
+        border-left-color: rgba(156, 163, 175, 0.3);
+    }
+    .step-pending::before {
+        content: "○";
+        color: #9ca3af;
+    }
+    
+    /* Dark mode styles */
+    @media (prefers-color-scheme: dark) {
+        .step-done {
+            background: linear-gradient(135deg, rgba(52, 211, 153, 0.25), rgba(52, 211, 153, 0.1));
+            color: #34d399;
+            border-left-color: #34d399;
+        }
+        .step-done::before {
+            color: #34d399;
+        }
+        
+        .step-active {
+            background: linear-gradient(135deg, rgba(96, 165, 250, 0.3), rgba(96, 165, 250, 0.15));
+            color: #60a5fa;
+            border-left-color: #60a5fa;
+        }
+        .step-active::before {
+            color: #60a5fa;
+        }
+        
+        .step-pending {
+            background: rgba(209, 213, 219, 0.12);
+            color: #d1d5db;
+            border-left-color: rgba(209, 213, 219, 0.4);
+        }
+        .step-pending::before {
+            color: #d1d5db;
+        }
+    }
+    
+    @keyframes pulse {
+        0%, 100% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0.7;
+        }
     }
 
     .stButton > button {
@@ -300,15 +467,18 @@ with st.sidebar:
     st.subheader("Browser Mode")
     browser_mode = st.radio(
         "Chế độ trình duyệt:",
-        ["CDP (Port 9222)", "Headless (Ẩn)"],
+        ["CDP (Port 9222)", "CDP (Port 9223)", "Headless (Ẩn)"],
         index=0,
-        help="Sử dụng CDP để kết nối vào Chrome đang mở sẵn (chống bot tốt hơn).",
+        help="Sử dụng CDP để kết nối vào Chrome đang mở sẵn. Port 9223 dùng cho nested execution.",
     )
     st.session_state["browser_mode"] = browser_mode
 
-    cdp_url = CDP_URL
-    if browser_mode == "CDP (Port 9222)":
-        cdp_url = st.text_input("CDP Endpoint:", value=CDP_URL)
+    if "CDP (Port 9222)" in browser_mode:
+        cdp_url = "http://localhost:9222"
+    elif "CDP (Port 9223)" in browser_mode:
+        cdp_url = "http://localhost:9223"
+    else:
+        cdp_url = CDP_URL
 
     st.divider()
 
@@ -356,13 +526,46 @@ with st.sidebar:
 
     # --- History ---
     st.subheader("Lịch sử video")
-    if st.session_state.history:
-        for i, item in enumerate(st.session_state.history[:8]):
+    
+    # Load videos directly from output directory
+    video_files = []
+    if OUTPUT_DIR.exists():
+        for folder in sorted(OUTPUT_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if folder.is_dir() and folder.name != "browser_profile":
+                # Look for video files with various naming patterns
+                video_candidates = [
+                    folder / f"{folder.name}_final.mp4",
+                    folder / "final_video.mp4",
+                ]
+                
+                # Also check for any .mp4 files in the folder
+                mp4_files = list(folder.glob("*.mp4"))
+                
+                video_path = None
+                if mp4_files:
+                    # Prefer files with "final" in name
+                    final_videos = [f for f in mp4_files if "final" in f.name.lower()]
+                    video_path = final_videos[0] if final_videos else mp4_files[0]
+                else:
+                    # Check specific candidates
+                    for candidate in video_candidates:
+                        if candidate.exists():
+                            video_path = candidate
+                            break
+                
+                if video_path and video_path.exists():
+                    video_files.append({
+                        "name": folder.name,
+                        "path": str(video_path),
+                        "created_at": datetime.fromtimestamp(video_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    })
+    
+    if video_files:
+        for i, item in enumerate(video_files[:8]):
             col_info, col_btn = st.columns([3, 1])
             with col_info:
                 st.caption(item["created_at"])
-                tts_badge = f" [{item.get('engine', 'edge').upper()}]" if item.get("has_tts") else ""
-                st.markdown(f"**{item['name']}**{tts_badge}")
+                st.markdown(f"**{item['name']}**")
             with col_btn:
                 if st.button("Play", key=f"hist_{i}", use_container_width=True):
                     st.session_state.video_path = item["path"]
@@ -387,133 +590,134 @@ tab_create, tab_result = st.tabs(["Tạo video", "Kết quả"])
 
 # ---- Tab 1: Create Video ----
 with tab_create:
-    col_input, col_examples = st.columns([3, 2])
+    st.subheader("Kịch bản của bạn")
 
-    with col_input:
-        st.subheader("Kịch bản của bạn")
+    script_input = st.text_area(
+        label="Nhập kịch bản:",
+        height=200,
+        placeholder=(
+            "Ví dụ: Vào google.com tìm kiếm 'lập trình Python' và dừng lại khi thấy kết quả\n\n"
+            "Hoặc: Mở youtube.com, tìm kiếm 'Python programming' và ấn vào video đầu tiên"
+        ),
+        label_visibility="collapsed",
+    )
 
-        script_input = st.text_area(
-            label="Nhập kịch bản:",
-            height=160,
-            placeholder=(
-                "Ví dụ: Vào google.com tìm kiếm 'lập trình Python' và dừng lại khi thấy kết quả\n\n"
-                "Hoặc: Mở youtube.com, tìm kiếm 'Python programming' và ấn vào video đầu tiên"
-            ),
-            label_visibility="collapsed",
+    col_name, col_btn = st.columns([2, 1])
+    with col_name:
+        video_name_input = st.text_input(
+            "Tên video:",
+            value=_slugify(script_input) if script_input else "demo",
+            help="Tên file và key trong config",
         )
 
-        col_name, col_btn = st.columns([2, 1])
-        with col_name:
-            video_name_input = st.text_input(
-                "Tên video:",
-                value=_slugify(script_input) if script_input else "demo",
-                help="Tên file và key trong config",
-            )
-
-        with col_btn:
-            st.markdown("<br>", unsafe_allow_html=True)
-            generate_btn = st.button(
-                "Generate",
-                type="primary",
-                use_container_width=True,
-                disabled=st.session_state.is_generating,
-            )
-
-    with col_examples:
-        st.subheader("Ví dụ mẫu")
-        for label, example in EXAMPLE_SCRIPTS.items():
-            if st.button(label, use_container_width=True, key=f"ex_{label}"):
-                st.session_state["_example_script"] = example
-                st.rerun()
-
-    # Set script from example click
-    if "_example_script" in st.session_state:
-        script_input = st.session_state.pop("_example_script")
+    with col_btn:
+        st.markdown("<br>", unsafe_allow_html=True)
+        generate_btn = st.button(
+            "Tạo Video",
+            type="primary",
+            use_container_width=True,
+            disabled=st.session_state.is_generating,
+        )
 
     # --- Handle Generate ---
     if generate_btn:
         if not script_input.strip():
-            st.error("Vui long nhap kich ban truoc khi tao video.")
+            st.error("Vui lòng nhập kịch bản trước khi tạo video.")
         elif not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
-            st.error("Can GEMINI_API_KEY o thanh ben trai.")
+            st.error("Cần GEMINI_API_KEY ở thanh bên trái.")
         else:
             video_name = video_name_input.strip() or _slugify(script_input)
+            
+            # Create progress tracker
+            progress = PipelineProgress()
+            st.session_state.pipeline_progress = progress
             st.session_state.is_generating = True
             st.session_state.error_msg = None
             st.session_state.video_path = None
-            st.session_state.progress_step = 0
-            st.session_state.progress_msg = "Dang khoi dong..."
-            st.session_state.live_logs = []
+            st.session_state.stop_requested = False
 
             thread = threading.Thread(
                 target=_run_pipeline_thread,
                 args=(
                     script_input, video_name,
                     enable_tts, tts_voice, tts_engine, padding_ms, cdp_url,
+                    progress,
                 ),
                 daemon=True,
             )
+            st.session_state.pipeline_thread = thread
             thread.start()
             st.rerun()
 
     # --- Progress UI ---
     if st.session_state.is_generating:
-        st.info("Video dang duoc tao, vui long cho...")
+        progress = st.session_state.get("pipeline_progress")
+        
+        # Check if pipeline is done
+        if progress and progress.done:
+            st.session_state.is_generating = False
+            
+            if progress.error:
+                # Only show error if it's not a user-initiated stop
+                if "dừng bởi người dùng" not in progress.error.lower():
+                    st.session_state.error_msg = progress.error
+                st.session_state.video_path = None
+            else:
+                st.session_state.video_path = progress.video_path
+                if hasattr(progress, 'history_item'):
+                    st.session_state.history.insert(0, progress.history_item)
+                st.session_state.error_msg = None
+            
+            st.rerun()
+        
+        # Show progress with stop button
+        col_info, col_stop = st.columns([4, 1])
+        with col_info:
+            st.info("Đang tạo video, vui lòng chờ...")
+        with col_stop:
+            if st.button("Dừng", type="secondary", use_container_width=True, key="stop_btn"):
+                # Request stop via progress object
+                if progress:
+                    progress.request_stop()
+                st.rerun()
 
-        step = st.session_state.progress_step
+        step = progress.step if progress else 0
         total = st.session_state.progress_total
-        msg = st.session_state.progress_msg
+        msg = progress.msg if progress else "Đang khởi động..."
 
+        # Show progress bar
         progress_val = step / total if total > 0 else 0
-        st.progress(progress_val, text=f"Buoc {step}/{total}: {msg}")
+        st.progress(progress_val, text=f"Bước {step}/{total}: {msg}")
 
+        # Show detailed steps
+        st.markdown("### Tiến trình:")
         for i, label in enumerate(PIPELINE_STEPS, 1):
             if i < step:
                 st.markdown(
-                    f'<div class="step-item step-done">[DONE] {label}</div>',
+                    f'<div class="step-item step-done">{label}</div>',
                     unsafe_allow_html=True,
                 )
             elif i == step:
                 st.markdown(
-                    f'<div class="step-item step-active">[RUNNING] {label}</div>',
+                    f'<div class="step-item step-active">{label}</div>',
                     unsafe_allow_html=True,
                 )
             else:
                 st.markdown(
-                    f'<div class="step-item step-pending">[PENDING] {label}</div>',
+                    f'<div class="step-item step-pending">{label}</div>',
                     unsafe_allow_html=True,
                 )
 
-        # Show live logs
-        with st.expander("Live Logs (Terminal)", expanded=True):
-            log_text = "\\n".join(st.session_state.live_logs)
-            st.code(log_text, language="bash")
-
-        # Auto-refresh
-        time.sleep(2)
+        # Force refresh every 1 second
+        time.sleep(1)
         st.rerun()
 
     # --- Error UI ---
     if st.session_state.error_msg:
         error = st.session_state.error_msg
-        st.error("Da xay ra loi!")
-        with st.expander("Chi tiet loi"):
+        st.error("Đã xảy ra lỗi!")
+        with st.expander("Chi tiết lỗi"):
             st.code(error)
-
-        with st.expander("Goi y khac phuc"):
-            if "quota" in error.lower() or "rate" in error.lower():
-                st.markdown("- API quota het, thu lai sau it phut hoac doi API key")
-            elif "timeout" in error.lower():
-                st.markdown("- Trang web load cham, thu lai sau")
-            elif "webreel" in error.lower():
-                st.markdown("- Kiem tra webreel da duoc build chua: `pnpm build`")
-            elif "fpt" in error.lower() or "tts" in error.lower():
-                st.markdown("- Kiem tra FPT_TTS_API_KEY trong file .env")
-            elif "chrome" in error.lower() or "cdp" in error.lower():
-                st.markdown("- Kiem tra Chrome dang chay voi debug port: `start_chrome_debug.bat`")
-            else:
-                st.markdown("- Thu kich ban don gian hon")
-                st.markdown("- Kiem tra API key con hieu luc")
 
     # --- Success notification ---
     if (
@@ -521,12 +725,12 @@ with tab_create:
         and not st.session_state.is_generating
         and not st.session_state.error_msg
     ):
-        st.success("Video tao thanh cong! Xem o tab Ket qua.")
+        st.success("Video tạo thành công! Xem ở tab Kết quả.")
 
 
 # ---- Tab 2: Results ----
 with tab_result:
-    st.subheader("Video da tao")
+    st.subheader("Video đã tạo")
 
     video_path = st.session_state.video_path
     if video_path and Path(video_path).exists():
@@ -536,7 +740,7 @@ with tab_result:
         with col_dl:
             with open(video_path, "rb") as f:
                 st.download_button(
-                    label="Tai video (MP4)",
+                    label="Tải video (MP4)",
                     data=f,
                     file_name=Path(video_path).name,
                     mime="video/mp4",
@@ -544,14 +748,14 @@ with tab_result:
                 )
         with col_info:
             size_mb = Path(video_path).stat().st_size / 1024 / 1024
-            st.metric("Kich thuoc", f"{size_mb:.1f} MB")
+            st.metric("Kích thước", f"{size_mb:.1f} MB")
             st.metric("File", Path(video_path).name)
 
             # Check for other output files
             parent = Path(video_path).parent
             raw_videos = list(parent.glob("*.mp4"))
             if len(raw_videos) > 1:
-                st.caption(f"Thu muc output: {parent}")
+                st.caption(f"Thư mục output: {parent}")
 
             # Show TTS script if available
             tts_script_path = parent / "tts_script.json"
@@ -564,6 +768,6 @@ with tab_result:
                         st.markdown(f"**Narration {i}:** {item.get('text', '')}")
 
     elif video_path:
-        st.warning(f"File video khong ton tai: {video_path}")
+        st.warning(f"File video không tồn tại: {video_path}")
     else:
-        st.info("Chua co video. Tao video o tab Tao video.")
+        st.info("Chưa có video")
