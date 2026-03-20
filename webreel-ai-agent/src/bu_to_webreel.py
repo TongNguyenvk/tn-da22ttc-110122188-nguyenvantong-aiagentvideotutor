@@ -104,11 +104,14 @@ def _extract_selector_from_element(element_str: str | None) -> str | list[str] |
     if not css_selector and attrs.get("role") and attrs.get("type"):
         css_selector = f"{tag}[role='{attrs['role']}'][type='{attrs['type']}']"
 
-    # Priority 6: tag fallback (but skip generic tags like div/span)
-    if not css_selector and tag and tag not in ("div", "span", "section", "article", "main", "header", "footer"):
+    # Priority 6: tag fallback (but skip generic tags AND form inputs without attributes)
+    # IMPORTANT: Don't use bare "input"/"textarea"/"select" as fallback because they're too generic
+    # If we only have xpath for form inputs, use xpath only (no unreliable fallback)
+    if not css_selector and tag and tag not in ("div", "span", "section", "article", "main", "header", "footer", "input", "textarea", "select", "button"):
         css_selector = tag
 
-    # Return array fallback [xpath, css] or single string
+    # Return xpath-only if no reliable CSS selector found
+    # This prevents webreel from using unreliable fallbacks like bare "input" tag
     if xpath_selector and css_selector:
         return [xpath_selector, css_selector]
     elif xpath_selector:
@@ -157,7 +160,7 @@ def convert_history_to_config_and_script(
     if start_url and start_url != "about:blank":
         steps.append({
             "action": "pause",
-            "ms": 2000,
+            "ms": 3000,  # Increased from 2000ms to let Chrome fully render
             "description": "Wait for initial page to load"
         })
 
@@ -307,6 +310,7 @@ def convert_history_to_config_and_script(
                     steps.append({
                         "action": "type",
                         "text": clean_text,
+                        "selector": selector,
                         "charDelay": 50,
                         "description": f"Type '{clean_text[:30]}'"
                     })

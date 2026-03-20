@@ -142,8 +142,6 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str) 
         cwd=str(REPO_ROOT),
         env=env,
         timeout=300,
-        encoding='utf-8',
-        errors='replace'
     )
     elapsed = time.time() - start_time
 
@@ -155,7 +153,7 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str) 
     if result.returncode != 0:
         logger.error(f"webreel failed (exit code {result.returncode}) after {elapsed:.1f}s")
         dry_cmd = f'node "{WEBREEL_BIN}" record {video_name} -c "{config_path.absolute()}" --dry-run'
-        dry = subprocess.run(dry_cmd, capture_output=True, text=True, shell=True, cwd=str(REPO_ROOT), env=env, encoding='utf-8', errors='replace')
+        dry = subprocess.run(dry_cmd, capture_output=True, text=True, shell=True, cwd=str(REPO_ROOT), env=env)
         if dry.stdout:
             logger.info(f"[dry-run]:\n{dry.stdout}")
         if dry.stderr:

@@ -6,11 +6,9 @@ Usage:
   cd webreel-ai-agent
   streamlit run src/app.py
 """
-import asyncio
 import os
 import re
 import sys
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,10 +18,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Import V3 pipeline
+# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from run_pipeline import run_pipeline_v3, CDP_URL, set_stop_flag
+
+# Import API client and WebSocket client
+from frontend.api_client import (
+    submit_job, get_job_status, list_jobs, check_backend_health,
+    APIClientError, ConnectionFailedError, TimeoutError as APITimeoutError
+)
+from frontend.websocket_client import track_progress
 from src.webreel_runner import OUTPUT_DIR
+
+# Default CDP URL
+CDP_URL = "http://localhost:9222"
 
 
 # ==============================================================================
@@ -114,167 +121,92 @@ def _init_session():
         "progress_total": len(PIPELINE_STEPS),
         "progress_msg": "",
         "error_msg": None,
-        "pipeline_thread": None,
+        "current_job_id": None,
+        "progress_tracker": None,
+        "backend_healthy": check_backend_health(),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-class PipelineProgress:
-    """Thread-safe progress tracker."""
+class JobProgress:
+    """Progress tracker for API-based job execution."""
     def __init__(self):
         self.step = 0
         self.msg = ""
-        self.logs = []
-        self.last_phase = 0
+        self.status = "pending"
+        self.job_id = None
         self.done = False
         self.error = None
-        self.video_path = None
-        self.stop_event = threading.Event()
+        self.video_url = None
         
-    def update(self, step: int, msg: str):
-        self.step = step
-        self.msg = msg
+    def update_from_api(self, job_data: dict):
+        """Update progress from API response."""
+        self.status = job_data.get("status", "pending")
         
-    def add_log(self, log: str):
-        self.logs.append(log)
-        if len(self.logs) > 100:
-            self.logs = self.logs[-100:]
-    
-    def request_stop(self):
-        """Request pipeline to stop."""
-        self.stop_event.set()
-        self.done = True
-        self.error = "Đã dừng bởi người dùng"
-    
-    def should_stop(self) -> bool:
-        """Check if pipeline should stop."""
-        return self.stop_event.is_set()
+        # Map status to done flag
+        if self.status in ["completed", "failed", "interrupted"]:
+            self.done = True
+        
+        # Extract progress information
+        if "progress" in job_data and job_data["progress"]:
+            progress = job_data["progress"]
+            self.step = progress.get("current_phase", 0)
+            self.msg = progress.get("message", "")
+        
+        # Extract error if failed
+        if self.status == "failed" and "error" in job_data:
+            self.error = job_data["error"]
+        
+        # Extract video URL if completed
+        if self.status == "completed" and "result" in job_data:
+            result = job_data["result"]
+            self.video_url = result.get("video_url", "")
 
 
-def _run_pipeline_thread(
-    user_input: str,
-    video_name: str,
-    enable_tts: bool,
-    tts_voice: str,
-    tts_engine: str,
-    padding_ms: int,
-    cdp_url: str = CDP_URL,
-    progress: PipelineProgress = None,
-):
-    """Run V3 pipeline in a background thread with progress tracking."""
-    try:
-        # Check if stopped before starting
-        if progress and progress.done:
-            logger.info("Pipeline stopped before starting")
-            return
-            
-        # Add custom logging handler to capture phase changes
-        import logging
+def _handle_progress_update(job_data: dict):
+    """Handle progress update from WebSocket or polling."""
+    if "pipeline_progress" not in st.session_state:
+        return
+    
+    progress = st.session_state.pipeline_progress
+    progress.update_from_api(job_data)
+    
+    # Check if job is complete
+    if progress.done:
+        # Stop the tracker
+        if st.session_state.progress_tracker:
+            st.session_state.progress_tracker.stop()
+            st.session_state.progress_tracker = None
         
-        class ProgressLogHandler(logging.Handler):
-            def __init__(self, progress_tracker):
-                super().__init__()
-                self.progress = progress_tracker
-                
-            def emit(self, record):
-                try:
-                    # Check if stopped
-                    if self.progress and self.progress.should_stop():
-                        return
-                        
-                    msg = self.format(record)
+        st.session_state.is_generating = False
+        
+        if progress.status == "completed":
+            # Get the full job details to extract video path
+            try:
+                job_details = get_job_status(progress.job_id)
+                if "result" in job_details and job_details["result"]:
+                    result = job_details["result"]
+                    video_path = result.get("video_path", "")
+                    st.session_state.video_path = video_path
                     
-                    # Detect phase changes from log messages
-                    if "Phase 1: The Scout" in msg:
-                        if self.progress.last_phase < 1:
-                            self.progress.update(1, "The Scout - Đang thu thập dữ liệu từ web...")
-                            self.progress.last_phase = 1
-                    elif "Phase 2: The Parser" in msg:
-                        if self.progress.last_phase < 2:
-                            self.progress.update(2, "The Parser - Đang phân tích và tạo config...")
-                            self.progress.last_phase = 2
-                    elif "Phase 3: Ground-Truth TTS" in msg:
-                        if self.progress.last_phase < 3:
-                            self.progress.update(3, "Ground-Truth TTS - Đang tạo giọng nói...")
-                            self.progress.last_phase = 3
-                    elif "Phase 4: The Injector" in msg:
-                        if self.progress.last_phase < 4:
-                            self.progress.update(4, "The Injector - Đang chèn audio vào timeline...")
-                            self.progress.last_phase = 4
-                    elif "Phase 5: The Execution" in msg:
-                        if self.progress.last_phase < 5:
-                            self.progress.update(5, "The Execution - Đang quay video...")
-                            self.progress.last_phase = 5
-                    elif "Phase 6: The Composer" in msg:
-                        if self.progress.last_phase < 6:
-                            self.progress.update(6, "The Composer - Đang ghép video và audio...")
-                            self.progress.last_phase = 6
-                    elif "V3 PIPELINE COMPLETED" in msg:
-                        self.progress.update(6, "Hoàn thành!")
-                except Exception:
-                    pass
+                    # Add to history
+                    history_item = {
+                        "script": job_details.get("task", ""),
+                        "path": video_path,
+                        "name": job_details.get("video_name", ""),
+                        "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                        "job_id": progress.job_id,
+                    }
+                    st.session_state.history.insert(0, history_item)
+                    _save_history(st.session_state.history)
+            except Exception as e:
+                print(f"Error fetching job details: {e}")
         
-        # Add handler to root logger
-        handler = ProgressLogHandler(progress)
-        root_logger = logging.getLogger()
-        root_logger.addHandler(handler)
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        try:
-            if progress:
-                progress.update(1, "Đang khởi động pipeline...")
-            
-            # Check if stopped before running
-            if progress and progress.should_stop():
-                logger.info("Pipeline stopped before execution")
-                return
-            
-            video_path = loop.run_until_complete(run_pipeline_v3(
-                task=user_input,
-                video_name=video_name,
-                cdp_url=cdp_url,
-                enable_tts=enable_tts,
-                tts_voice=tts_voice,
-                tts_engine=tts_engine,
-                padding_ms=padding_ms,
-                progress=progress,
-            ))
-        finally:
-            root_logger.removeHandler(handler)
-
-        # Check if stopped after completion
-        if progress and progress.should_stop():
-            logger.info("Pipeline was stopped, ignoring results")
-            return
-
-        # Store results in progress object
-        if progress:
-            progress.video_path = str(video_path) if video_path else None
-            progress.error = None
-            progress.done = True
-            progress.history_item = {
-                "script": user_input,
-                "path": str(video_path) if video_path else None,
-                "name": video_name,
-                "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                "has_tts": enable_tts,
-                "engine": tts_engine,
-            }
-
-    except Exception as exc:
-        import traceback
-        if progress:
-            # Check if it's a stop-related error
-            if progress.done and progress.error:
-                logger.info("Pipeline stopped, ignoring exception")
-                return
-            progress.error = f"{exc}\n\n{traceback.format_exc()}"
-            progress.video_path = None
-            progress.done = True
+        elif progress.status == "failed":
+            st.session_state.error_msg = progress.error or "Job failed"
+            st.session_state.video_path = None
 
 
 # ==============================================================================
@@ -448,6 +380,16 @@ _init_session()
 # ---- Sidebar ----
 with st.sidebar:
     st.title("Cấu hình")
+    
+    # Backend health check
+    backend_status = check_backend_health()
+    if backend_status:
+        st.success("Backend: Hoạt động")
+    else:
+        st.error("Backend: Không hoạt động")
+        st.caption("Khởi động: uvicorn main:app --reload")
+    
+    st.session_state.backend_healthy = backend_status
 
     # --- LLM Provider ---
     st.subheader("LLM Provider")
@@ -527,51 +469,44 @@ with st.sidebar:
     # --- History ---
     st.subheader("Lịch sử video")
     
-    # Load videos directly from output directory
-    video_files = []
-    if OUTPUT_DIR.exists():
-        for folder in sorted(OUTPUT_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
-            if folder.is_dir() and folder.name != "browser_profile":
-                # Look for video files with various naming patterns
-                video_candidates = [
-                    folder / f"{folder.name}_final.mp4",
-                    folder / "final_video.mp4",
-                ]
-                
-                # Also check for any .mp4 files in the folder
-                mp4_files = list(folder.glob("*.mp4"))
-                
-                video_path = None
-                if mp4_files:
-                    # Prefer files with "final" in name
-                    final_videos = [f for f in mp4_files if "final" in f.name.lower()]
-                    video_path = final_videos[0] if final_videos else mp4_files[0]
-                else:
-                    # Check specific candidates
-                    for candidate in video_candidates:
-                        if candidate.exists():
-                            video_path = candidate
-                            break
-                
-                if video_path and video_path.exists():
-                    video_files.append({
-                        "name": folder.name,
-                        "path": str(video_path),
-                        "created_at": datetime.fromtimestamp(video_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
-                    })
+    # Fetch completed jobs from backend API
+    try:
+        completed_jobs = list_jobs(status="completed", limit=10)
+        
+        if completed_jobs:
+            for i, job in enumerate(completed_jobs[:8]):
+                col_info, col_btn = st.columns([3, 1])
+                with col_info:
+                    created_at = job.get("created_at", "")
+                    if created_at:
+                        # Format timestamp
+                        try:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            formatted_date = dt.strftime("%Y-%m-%d %H:%M")
+                        except:
+                            formatted_date = created_at
+                    else:
+                        formatted_date = "Unknown"
+                    
+                    st.caption(formatted_date)
+                    video_name = job.get("video_name", job.get("job_id", ""))
+                    st.markdown(f"**{video_name}**")
+                with col_btn:
+                    if st.button("Play", key=f"hist_{i}", use_container_width=True):
+                        # Get video path from job result
+                        if "result" in job and job["result"]:
+                            video_path = job["result"].get("video_path", "")
+                            if video_path:
+                                st.session_state.video_path = video_path
+                                st.rerun()
+        else:
+            st.caption("Chưa có video nào.")
     
-    if video_files:
-        for i, item in enumerate(video_files[:8]):
-            col_info, col_btn = st.columns([3, 1])
-            with col_info:
-                st.caption(item["created_at"])
-                st.markdown(f"**{item['name']}**")
-            with col_btn:
-                if st.button("Play", key=f"hist_{i}", use_container_width=True):
-                    st.session_state.video_path = item["path"]
-                    st.rerun()
-    else:
-        st.caption("Chưa có video nào.")
+    except ConnectionFailedError:
+        st.caption("Không thể kết nối tới backend")
+    except Exception as e:
+        st.caption(f"Lỗi: {str(e)}")
 
     st.divider()
     st.caption("AI Video Tutor v3.0 | V3 Pipeline")
@@ -625,29 +560,53 @@ with tab_create:
             st.error("Vui lòng nhập kịch bản trước khi tạo video.")
         elif not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
             st.error("Cần GEMINI_API_KEY ở thanh bên trái.")
+        elif not st.session_state.backend_healthy:
+            st.error("Backend không hoạt động. Vui lòng khởi động FastAPI backend trước.")
+            st.info("Chạy lệnh: cd webreel-ai-agent/backend && uvicorn main:app --reload")
         else:
             video_name = video_name_input.strip() or _slugify(script_input)
             
-            # Create progress tracker
-            progress = PipelineProgress()
-            st.session_state.pipeline_progress = progress
-            st.session_state.is_generating = True
-            st.session_state.error_msg = None
-            st.session_state.video_path = None
-            st.session_state.stop_requested = False
-
-            thread = threading.Thread(
-                target=_run_pipeline_thread,
-                args=(
-                    script_input, video_name,
-                    enable_tts, tts_voice, tts_engine, padding_ms, cdp_url,
-                    progress,
-                ),
-                daemon=True,
-            )
-            st.session_state.pipeline_thread = thread
-            thread.start()
-            st.rerun()
+            # Prepare job configuration
+            job_config = {
+                "enable_tts": enable_tts,
+                "tts_voice": tts_voice,
+                "tts_engine": tts_engine,
+                "cdp_url": cdp_url,
+                "padding_ms": padding_ms,
+            }
+            
+            try:
+                # Submit job to backend
+                response = submit_job(
+                    task=script_input,
+                    video_name=video_name,
+                    config=job_config
+                )
+                
+                job_id = response["job_id"]
+                
+                # Create progress tracker
+                progress = JobProgress()
+                progress.job_id = job_id
+                st.session_state.pipeline_progress = progress
+                st.session_state.current_job_id = job_id
+                st.session_state.is_generating = True
+                st.session_state.error_msg = None
+                st.session_state.video_path = None
+                
+                # Start WebSocket progress tracking
+                tracker = track_progress(job_id, _handle_progress_update, use_fallback=True)
+                st.session_state.progress_tracker = tracker
+                
+                st.rerun()
+                
+            except ConnectionFailedError as e:
+                st.error(f"Không thể kết nối tới backend: {str(e)}")
+                st.info("Vui lòng khởi động FastAPI backend: cd webreel-ai-agent/backend && uvicorn main:app --reload")
+            except APITimeoutError as e:
+                st.error(f"Timeout: {str(e)}")
+            except APIClientError as e:
+                st.error(f"Lỗi API: {str(e)}")
 
     # --- Progress UI ---
     if st.session_state.is_generating:
@@ -658,28 +617,13 @@ with tab_create:
             st.session_state.is_generating = False
             
             if progress.error:
-                # Only show error if it's not a user-initiated stop
-                if "dừng bởi người dùng" not in progress.error.lower():
-                    st.session_state.error_msg = progress.error
+                st.session_state.error_msg = progress.error
                 st.session_state.video_path = None
-            else:
-                st.session_state.video_path = progress.video_path
-                if hasattr(progress, 'history_item'):
-                    st.session_state.history.insert(0, progress.history_item)
-                st.session_state.error_msg = None
             
             st.rerun()
         
-        # Show progress with stop button
-        col_info, col_stop = st.columns([4, 1])
-        with col_info:
-            st.info("Đang tạo video, vui lòng chờ...")
-        with col_stop:
-            if st.button("Dừng", type="secondary", use_container_width=True, key="stop_btn"):
-                # Request stop via progress object
-                if progress:
-                    progress.request_stop()
-                st.rerun()
+        # Show progress info
+        st.info(f"Đang tạo video... Job ID: {st.session_state.current_job_id}")
 
         step = progress.step if progress else 0
         total = st.session_state.progress_total

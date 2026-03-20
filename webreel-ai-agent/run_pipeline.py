@@ -359,6 +359,7 @@ async def run_pipeline_v3(
     tts_engine: str = "fpt",
     padding_ms: int = 300,
     progress = None,
+    progress_callback = None,
 ) -> Path:
     """
     V3 Pipeline: 6 phases, no AI review, deterministic.
@@ -371,12 +372,15 @@ async def run_pipeline_v3(
         tts_voice: Voice name (banmai/leminh/etc).
         tts_engine: TTS engine ("fpt" or "edge").
         padding_ms: Padding added to each narration pause.
-        progress: Optional progress tracker for UI updates.
+        progress: Optional progress tracker for UI updates (legacy).
+        progress_callback: Optional async callback function(phase: int, message: str) for progress updates.
     """
     output_dir = OUTPUT_DIR / video_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Phase 1: The Scout (includes Chrome check with auto-start)
+    if progress_callback:
+        await progress_callback(1, "Phase 1: Browser-use agent running...")
     if progress:
         progress.update(1, "Phase 1: Browser-use agent running...")
     history_data = await phase1_scout(task, cdp_url)
@@ -388,6 +392,8 @@ async def run_pipeline_v3(
     logger.info(f"History saved: {history_path}")
 
     # Phase 2: The Parser
+    if progress_callback:
+        await progress_callback(2, "Phase 2: Parsing actions...")
     if progress:
         progress.update(2, "Phase 2: Parsing actions...")
     config, tts_script = phase2_parser(history_data, video_name)
@@ -401,17 +407,23 @@ async def run_pipeline_v3(
     # Phase 3: Ground-Truth TTS
     segments = []
     if enable_tts and tts_script:
+        if progress_callback:
+            await progress_callback(3, "Phase 3: Generating TTS audio...")
         if progress:
             progress.update(3, "Phase 3: Generating TTS audio...")
         segments = phase3_tts(tts_script, output_dir, voice=tts_voice, engine=tts_engine)
 
     # Phase 4: The Injector
     if segments:
+        if progress_callback:
+            await progress_callback(4, "Phase 4: Injecting audio pauses...")
         if progress:
             progress.update(4, "Phase 4: Injecting audio pauses...")
         config = phase4_injector(config, video_name, segments, padding_ms)
 
     # Phase 5: The Execution
+    if progress_callback:
+        await progress_callback(5, "Phase 5: Recording video with Webreel...")
     if progress:
         progress.update(5, "Phase 5: Recording video with Webreel...")
     config_path = output_dir / "webreel_pipeline.config.json"
@@ -420,6 +432,8 @@ async def run_pipeline_v3(
     # Phase 6: The Composer
     final_video_path = video_path
     if segments and video_path and video_path.exists():
+        if progress_callback:
+            await progress_callback(6, "Phase 6: Composing final video...")
         if progress:
             progress.update(6, "Phase 6: Composing final video...")
         final_video_path = phase6_composer(
