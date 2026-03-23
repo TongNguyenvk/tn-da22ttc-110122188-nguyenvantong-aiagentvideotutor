@@ -86,7 +86,7 @@ class ShutdownHandler:
             frame: Current stack frame
         """
         signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
-        logger.info(f"Received {signal_name} signal, initiating graceful shutdown")
+        logger.warning(f"Received {signal_name} signal, initiating graceful shutdown")
         
         # Set shutdown flag
         self.is_shutting_down = True

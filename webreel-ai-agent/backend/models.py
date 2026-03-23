@@ -17,6 +17,7 @@ class JobConfig(BaseModel):
     tts_engine: Literal["fpt", "edge"] = "fpt"
     cdp_url: str = "http://localhost:9222"
     padding_ms: int = 300
+    enable_review: bool = False
 
 
 class JobProgress(BaseModel):
