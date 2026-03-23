@@ -204,6 +204,230 @@ def phase2_parser(history_data: dict, video_name: str) -> tuple[dict, list]:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2.5: CLI Review TTS Script
+# ---------------------------------------------------------------------------
+def _print_segment(idx: int, segment: dict):
+    """Pretty-print a single narration segment."""
+    text = segment.get("text", "")
+    print(f"  [{idx}] {text}")
+
+
+def phase2_5_review_tts_script(tts_script: list, config: dict, video_name: str) -> list:
+    """Interactive CLI review of TTS narration segments.
+
+    Users can view, edit, delete, or add segments before TTS generation.
+    Returns the (possibly modified) tts_script list.
+    """
+    logger.info("=" * 80)
+    logger.info("Phase 2.5: Review TTS Script (interactive CLI)")
+    logger.info("=" * 80)
+
+    if not tts_script:
+        print("\n  (No narration segments to review.)")
+        return tts_script
+
+    # Show all segments
+    def _show_all():
+        print("\n" + "=" * 60)
+        print(f"  TTS Script - {len(tts_script)} segment(s)")
+        print("=" * 60)
+        for i, seg in enumerate(tts_script):
+            _print_segment(i, seg)
+            print()
+        print("=" * 60)
+
+    _show_all()
+
+    print("\n  Commands:")
+    print("    e <n>       Edit segment n")
+    print("    d <n>       Delete segment n")
+    print("    a <n>       Add new segment after n (use -1 for start)")
+    print("    s           Show all segments again")
+    print("    ok          Accept and continue pipeline")
+    print("    q           Abort pipeline\n")
+
+    while True:
+        try:
+            cmd = input("  review> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise SystemExit("Pipeline aborted by user.")
+
+        if not cmd:
+            continue
+
+        parts = cmd.split(maxsplit=1)
+        action = parts[0].lower()
+
+        # --- Accept ---
+        if action == "ok":
+            break
+
+        # --- Abort ---
+        if action == "q":
+            raise SystemExit("Pipeline aborted by user.")
+
+        # --- Show ---
+        if action == "s":
+            _show_all()
+            continue
+
+        # --- Edit ---
+        if action == "e":
+            if len(parts) < 2 or not parts[1].isdigit():
+                print("  Usage: e <segment_number>")
+                continue
+            idx = int(parts[1])
+            if idx < 0 or idx >= len(tts_script):
+                print(f"  Invalid index. Valid range: 0-{len(tts_script) - 1}")
+                continue
+            print(f"  Current text [{idx}]:")
+            print(f"    {tts_script[idx]['text']}")
+            print("  Enter new text (empty line to cancel):")
+            try:
+                new_text = input("    > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Edit cancelled.")
+                continue
+            if new_text:
+                old_text = tts_script[idx]["text"]
+                tts_script[idx]["text"] = new_text
+                # Also update the corresponding pause description in config
+                _sync_narration_to_config(config, video_name, idx, new_text)
+                print(f"  Segment [{idx}] updated.")
+            else:
+                print("  Edit cancelled.")
+            continue
+
+        # --- Delete ---
+        if action == "d":
+            if len(parts) < 2 or not parts[1].isdigit():
+                print("  Usage: d <segment_number>")
+                continue
+            idx = int(parts[1])
+            if idx < 0 or idx >= len(tts_script):
+                print(f"  Invalid index. Valid range: 0-{len(tts_script) - 1}")
+                continue
+            print(f"  Deleting segment [{idx}]: {tts_script[idx]['text'][:60]}...")
+            _remove_narration_from_config(config, video_name, idx)
+            tts_script.pop(idx)
+            # Re-index remaining segments
+            for i, seg in enumerate(tts_script):
+                seg["narration_index"] = i
+            _reindex_narrations_in_config(config, video_name, tts_script)
+            print(f"  Deleted. {len(tts_script)} segment(s) remaining.")
+            continue
+
+        # --- Add ---
+        if action == "a":
+            if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+                print("  Usage: a <position> (insert after this index, -1 for start)")
+                continue
+            pos = int(parts[1])
+            if pos < -1 or pos >= len(tts_script):
+                print(f"  Invalid position. Valid range: -1 to {len(tts_script) - 1}")
+                continue
+            print("  Enter narration text (empty line to cancel):")
+            try:
+                new_text = input("    > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Add cancelled.")
+                continue
+            if new_text:
+                insert_at = pos + 1
+                new_seg = {"text": new_text, "narration_index": insert_at}
+                tts_script.insert(insert_at, new_seg)
+                # Re-index
+                for i, seg in enumerate(tts_script):
+                    seg["narration_index"] = i
+                _insert_narration_into_config(config, video_name, insert_at, new_text)
+                _reindex_narrations_in_config(config, video_name, tts_script)
+                print(f"  Inserted segment [{insert_at}]. {len(tts_script)} segment(s) total.")
+            else:
+                print("  Add cancelled.")
+            continue
+
+        print(f"  Unknown command: {action}. Type 'ok' to continue or 's' to show segments.")
+
+    logger.info(f"Review complete. {len(tts_script)} segment(s) accepted.")
+    return tts_script
+
+
+# ---------------------------------------------------------------------------
+# Config sync helpers for Phase 2.5
+# ---------------------------------------------------------------------------
+def _find_narration_steps(config: dict, video_name: str) -> list[tuple[int, dict]]:
+    """Find all pause steps that are narration placeholders, returns (step_index, step)."""
+    steps = config["videos"][video_name]["steps"]
+    results = []
+    for i, step in enumerate(steps):
+        desc = step.get("description", "")
+        if step.get("action") == "pause" and desc.startswith("[NARRATION:"):
+            results.append((i, step))
+    return results
+
+
+def _sync_narration_to_config(config: dict, video_name: str, narration_idx: int, new_text: str):
+    """Update the pause step description for a given narration index."""
+    narration_steps = _find_narration_steps(config, video_name)
+    for step_i, step in narration_steps:
+        desc = step.get("description", "")
+        if desc.startswith(f"[NARRATION:{narration_idx}]"):
+            step["description"] = f"[NARRATION:{narration_idx}] {new_text}"
+            break
+
+
+def _remove_narration_from_config(config: dict, video_name: str, narration_idx: int):
+    """Remove the pause step for a deleted narration."""
+    steps = config["videos"][video_name]["steps"]
+    for i, step in enumerate(steps):
+        desc = step.get("description", "")
+        if step.get("action") == "pause" and desc.startswith(f"[NARRATION:{narration_idx}]"):
+            steps.pop(i)
+            break
+
+
+def _insert_narration_into_config(config: dict, video_name: str, insert_at: int, text: str):
+    """Insert a new narration pause step into config at the right position."""
+    steps = config["videos"][video_name]["steps"]
+    narration_steps = _find_narration_steps(config, video_name)
+
+    if not narration_steps:
+        # No existing narrations; insert before the tail pause
+        insert_pos = max(0, len(steps) - 1)
+    elif insert_at > 0 and insert_at - 1 < len(narration_steps):
+        # Insert after the previous narration step
+        insert_pos = narration_steps[insert_at - 1][0] + 1
+    elif insert_at == 0:
+        # Insert before the first narration step
+        insert_pos = narration_steps[0][0]
+    else:
+        # Insert after the last narration step
+        insert_pos = narration_steps[-1][0] + 1
+
+    new_step = {
+        "action": "pause",
+        "ms": 1000,
+        "description": f"[NARRATION:{insert_at}] {text}",
+    }
+    steps.insert(insert_pos, new_step)
+
+
+def _reindex_narrations_in_config(config: dict, video_name: str, tts_script: list):
+    """Re-number all [NARRATION:X] descriptions to match current tts_script order."""
+    import re as _re
+    steps = config["videos"][video_name]["steps"]
+    narration_counter = 0
+    for step in steps:
+        desc = step.get("description", "")
+        if step.get("action") == "pause" and desc.startswith("[NARRATION:"):
+            if narration_counter < len(tts_script):
+                text = tts_script[narration_counter]["text"]
+                step["description"] = f"[NARRATION:{narration_counter}] {text}"
+                narration_counter += 1
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: Ground-Truth TTS
 # ---------------------------------------------------------------------------
 def phase3_tts(
@@ -358,6 +582,7 @@ async def run_pipeline_v3(
     tts_voice: str = "banmai",
     tts_engine: str = "fpt",
     padding_ms: int = 300,
+    enable_review: bool = False,
     progress = None,
     progress_callback = None,
 ) -> Path:
@@ -403,6 +628,18 @@ async def run_pipeline_v3(
     with open(tts_script_path, "w", encoding="utf-8") as f:
         json.dump(tts_script, f, indent=2, ensure_ascii=False)
     logger.info(f"TTS script: {tts_script_path} ({len(tts_script)} segments)")
+
+    # Phase 2.5: Review TTS Script (CLI only)
+    if enable_review and tts_script:
+        if progress_callback:
+            await progress_callback(2, "Phase 2.5: Waiting for TTS script review...")
+        if progress:
+            progress.update(2, "Phase 2.5: Waiting for TTS script review...")
+        tts_script = phase2_5_review_tts_script(tts_script, config, video_name)
+        # Save updated tts_script
+        with open(tts_script_path, "w", encoding="utf-8") as f:
+            json.dump(tts_script, f, indent=2, ensure_ascii=False)
+        logger.info(f"TTS script updated after review: {len(tts_script)} segments")
 
     # Phase 3: Ground-Truth TTS
     segments = []
@@ -497,6 +734,18 @@ if __name__ == "__main__":
         default=300,
         help="Padding ms added to each narration pause (default: 300)",
     )
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        default=False,
+        help="Pause after Phase 2 to review/edit TTS narration scripts in CLI",
+    )
+    parser.add_argument(
+        "--no-review",
+        dest="review",
+        action="store_false",
+        help="Skip TTS script review (default behavior)",
+    )
 
     args = parser.parse_args()
 
@@ -514,6 +763,7 @@ if __name__ == "__main__":
         tts_voice=args.voice,
         tts_engine=args.engine,
         padding_ms=args.padding,
+        enable_review=args.review,
     ))
 
     if video_path:

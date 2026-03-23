@@ -163,7 +163,21 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str) 
     else:
         logger.info(f"webreel done in {elapsed:.1f}s")
 
-    # Find video output - webreel outputs to <config_dir>/videos/<name>.mp4
+    # Find video output - webreel outputs to different locations depending on version
+    # Priority order:
+    # 1. .webreel/raw/<name>.mp4 (current webreel behavior)
+    # 2. videos/<name>.mp4 (older behavior)
+    # 3. .webreel/videos/<name>.mp4 (even older)
+    # 4. <config_dir>/*.mp4 (fallback, skip _final/_raw files)
+    
+    # Check .webreel/raw/ first (current webreel output location)
+    raw_dir = config_path.parent / ".webreel" / "raw"
+    if raw_dir.exists():
+        for mp4 in raw_dir.glob("*.mp4"):
+            logger.info(f"Video output: {mp4}")
+            return mp4
+    
+    # Check videos/ directory
     video_dir = config_path.parent / "videos"
     if video_dir.exists():
         for mp4 in video_dir.glob("*.mp4"):

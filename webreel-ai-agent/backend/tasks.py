@@ -101,6 +101,7 @@ async def execute_pipeline_task(
                 await broadcast_progress_func(job_id)
         
         # Execute pipeline with progress callback
+        # NOTE: enable_review is always False for web UI (CLI-only feature)
         video_path = await run_pipeline_v3(
             task=task,
             video_name=video_name,
@@ -109,6 +110,7 @@ async def execute_pipeline_task(
             tts_voice=config.get("tts_voice", "banmai"),
             tts_engine=config.get("tts_engine", "fpt"),
             padding_ms=config.get("padding_ms", 300),
+            enable_review=False,
             progress_callback=progress_callback
         )
         
