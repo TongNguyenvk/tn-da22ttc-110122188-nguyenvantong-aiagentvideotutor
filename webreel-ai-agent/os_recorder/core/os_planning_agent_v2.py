@@ -144,9 +144,9 @@ AVAILABLE UI ELEMENTS (indexed):
 Each element has: [index] ControlType "Name" (centerX, centerY) widthXheight
 
 AVAILABLE ACTIONS:
-- click_element: Click an element by its index. Use "element_index" field. (If interacting with MS Excel cells, output "excel_range" e.g., "B6". If clicking specific text in MS Word, output "target_text" e.g., "Word").
-- drag_mouse: Drag the mouse from one element to another to select/highlight. Use "start_index" and "end_index" fields from the UI ELEMENTS list. (If interacting with MS Excel cells, output "start_excel_range" and "end_excel_range". If highlighting a phrase in MS Word, output "target_text" containing the exact phrase).
-- type_text: Type text into the focused element. Use "text" field. (If interacting with MS Excel cells, you MUST also output "excel_range" string field, e.g., "B6").
+- click_element: Click an element by its index. Use "element_index" field. (To click specific text or a specific cell block, use the "target_value" field instead).
+- drag_mouse: Drag the mouse from one element to another to select/highlight. Use "start_index" and "end_index" fields from the UI ELEMENTS list. (To highlight a specific phrase or drag across a cell range, use the "target_value" field containing the exact phrase/range).
+- type_text: Type text into the focused element. Use "text" field. (If typing into a specific cell or field, you MUST also output the "target_value" field).
 - press_key: Press a SAFE key. Allowed: space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end, 1-9. Use "key" field. Optional use "repeat" integer field.
 - press_hotkey: Press a combination of keys together. Use "keys" array field. Allowed: shift, ctrl, alt plus all keys from press_key. Optional use "repeat" integer field to press multiple times.
 - scroll: Scroll mouse wheel. Use "amount" field (positive=up, negative=down).
@@ -158,7 +158,7 @@ RESPONSE FORMAT (JSON only):
   "thought": "Brief analysis of current screen state and what to do next",
   "action": {
     "action_type": "click_element",
-    "element_index": 3
+    "target_value": "B6"
   },
   "narration": "Vietnamese narration for this step (2-3 sentences, lecturer style, WITH DIACRITICS)",
   "is_done": false
@@ -168,12 +168,11 @@ RULES:
 1. Return EXACTLY ONE action per response.
 2. The "narration" field is for video voiceover. Write in Vietnamese WITH FULL DIACRITICS. Be engaging like a lecturer.
 3. Set "is_done": true when the task is complete. Include a closing narration.
-4. For click_element, ALWAYS use the element_index from the UI ELEMENTS list.
-5. For type_text, the text will be typed into whatever element currently has focus. You can output any language including Vietnamese.
+4. For click_element, ALWAYS use the element_index from the UI ELEMENTS list, UNLESS you are interacting with specific text/cells where you should use target_value.
+5. For type_text, the text will be typed into whatever element currently has focus or the element matched by target_value.
 6. NEVER use dangerous keys (delete, backspace, win).
 7. If the UI has changed after an action, analyze the NEW screenshot before deciding.
-8. Nếu mày muốn chọn nhiều ô trong Excel hoặc Vẽ một khối Shape trong PowerPoint -> Bắt buộc dùng drag_mouse.
-9. Nếu mày muốn bôi đen một đoạn chữ đang gõ trong TextBox/Word -> Bắt buộc dùng press_hotkey với mảng ["shift", "left"] (hoặc phím mũi tên tương ứng).
+8. If you want to interact with a specific UI element containing specific text or data, ALWAYS emit `target_value` so the Universal Engine can find its coordinates perfectly.
 """
 
 
@@ -300,15 +299,28 @@ class OSPlanningAgent:
             logger.info(f"  Narration: {agent_step.narration[:60]}")
             logger.info(f"  Done: {agent_step.is_done}")
 
-            # 5. Thực thi hành động (Silent - pywinauto API)
+            # 5. Anti-loop: Nếu agent lặp cùng action 3 lần liên tục -> force skip
             action = agent_step.action
             action_type = action.get("action_type", "")
 
-            if not dry_run and action_type != "done":
+            if len(self.steps) >= 3:
+                recent_keys = [
+                    (s.action.get("action_type"), s.action.get("target_value"))
+                    for s in self.steps[-3:]
+                ]
+                if len(set(recent_keys)) == 1:
+                    logger.warning(
+                        f"  LOOP DETECTED: '{recent_keys[0]}' lap 3 lan -> Tu dong chuyen buoc"
+                    )
+                    # Giu lai step nay nhung gia lap thanh done de thoat
+                    agent_step.is_done = True
+
+            # 6. Thuc thi hanh dong (Silent - pywinauto API)
+            if not dry_run and action_type != "done" and not agent_step.is_done:
                 self._execute_silent(
                     action, action_type, indexed_elements, app, root
                 )
-                time.sleep(0.5)  # Chờ UI update
+                time.sleep(0.5)  # Cho UI update
 
             # 6. Kiểm tra done
             if agent_step.is_done:
@@ -373,51 +385,36 @@ class OSPlanningAgent:
         from core.os_executor import is_key_safe
         from core.ui_inspector import find_element
 
-        # Xử lý Excel COM trước để cập nhật màn hình cho Planning Phase
-        if "excel_range" in action:
-            excel_range = action["excel_range"]
-            from core.excel_engine import get_excel_engine
-            engine = get_excel_engine()
+        # Xử lý dò đường Universal
+        target_val = action.get("target_value")
+        if target_val:
+            from core.universal_engine import get_universal_engine
+            engine = get_universal_engine()
             
             # Thoát chế độ Edit Mode của Excel trước khi thao tác COM nếu đang bị kẹt
-            try:
-                win = app.top_window()
-                win.type_keys("{ESC}")
-            except:
-                pass
+            if engine._determine_context(app.process) == "excel":
+                try:
+                    win = app.top_window()
+                    win.type_keys("{ESC}")
+                except:
+                    pass
 
             if action_type == "click_element":
-                if engine.silent_select_cell(excel_range):
-                    # Xoá element_index để tránh chạy fallback logic của pywinauto
+                if engine.get_coordinates(target_val, app.process):
+                    # Thực hiện focus (thay đổi visual) để screenshot tiếp theo Agent nhận ra đã click
+                    engine.focus_element(target_val, app.process)
                     action.pop("element_index", None)
                     time.sleep(0.5)
                     return
             elif action_type == "type_text":
                 text = action.get("text", "")
-                if engine.inject_text(excel_range, text):
-                    time.sleep(0.5)
-                    return
-
-        # Xử lý Word COM cho Dò đường (Silent)
-        if "target_text" in action:
-            target_text = action["target_text"]
-            from core.word_engine import WordEngine
-            w_engine = WordEngine()
-            # Móc PID
-            w_engine.set_target_pid(app.process)
-            
-            if action_type == "click_element":
-                if w_engine.connect() and w_engine.get_text_center(target_text):
-                    action.pop("element_index", None)
-                    action["selector"] = {
-                        "engine": "word_com",
-                        "target_text": target_text
-                    }
+                if engine.inject_data(target_val, text, app.process):
                     time.sleep(0.5)
                     return
             elif action_type == "drag_mouse":
-                if w_engine.connect() and w_engine.get_text_range_coords(target_text):
-                    action["engine"] = "word_com"
+                if engine.get_range_coordinates(target_val, app.process):
+                    action.pop("start_index", None)
+                    action.pop("end_index", None)
                     time.sleep(0.5)
                     return
 
@@ -729,14 +726,11 @@ class OSPlanningAgent:
 
             # Hành động
             if action_type == "click_element":
-                if "excel_range" in action:
+                target_val = action.get("target_value")
+                if target_val:
                     replay_plan.append({
                         "action_type": "click_element",
-                        "target_value": action["excel_range"],
-                        "selector": {
-                            "engine": "excel_com",
-                            "excel_range": action["excel_range"]
-                        },
+                        "target_value": target_val,
                         "move_duration": 1.0,
                     })
                 else:
@@ -752,27 +746,23 @@ class OSPlanningAgent:
                     })
 
             elif action_type == "type_text":
-                if "excel_range" in action:
-                    excel_target = action["excel_range"]
+                target_val = action.get("target_value")
+                if target_val:
                     # FIX: Tự động chèn bước di chuột (click_element) nếu Gemini xuất type_text thẳng mặt
                     # Tránh video thiếu diễn biến chuột.
                     last_click_target = None
                     for p in reversed(replay_plan):
-                        if p["action_type"] == "click_element" and p.get("selector", {}).get("engine") == "excel_com":
-                            last_click_target = p["selector"].get("excel_range")
+                        if p["action_type"] == "click_element" and p.get("target_value") == target_val:
+                            last_click_target = target_val
                             break
                         if p["action_type"] not in ("pause", "type_text"):
                             break
                     
-                    if last_click_target != excel_target:
-                        logger.info(f"  [Auto-Fix] Chèn thêm thao tác di chuột vào {excel_target} trước khi gõ chữ.")
+                    if last_click_target != target_val:
+                        logger.info(f"  [Auto-Fix] Chèn thêm thao tác di chuột vào {target_val} trước khi gõ chữ.")
                         replay_plan.append({
                             "action_type": "click_element",
-                            "target_value": excel_target,
-                            "selector": {
-                                "engine": "excel_com",
-                                "excel_range": excel_target
-                            },
+                            "target_value": target_val,
                             "move_duration": 1.0,
                         })
                         replay_plan.append({
@@ -783,12 +773,8 @@ class OSPlanningAgent:
 
                     replay_plan.append({
                         "action_type": "type_text",
-                        "target_value": action.get("text", ""),
+                        "target_value": target_val,
                         "text": action.get("text", ""),
-                        "selector": {
-                            "engine": "excel_com",
-                            "excel_range": excel_target
-                        },
                         "char_delay": 0.05,
                     })
                 else:
@@ -798,6 +784,17 @@ class OSPlanningAgent:
                         "text": action.get("text", ""),
                         "char_delay": 0.05,
                     })
+            
+            elif action_type == "drag_mouse":
+                target_val = action.get("target_value")
+                if target_val:
+                    replay_plan.append({
+                        "action_type": "drag_mouse",
+                        "target_value": target_val,
+                        "move_duration": 1.0,
+                    })
+                else:
+                    replay_plan.append(action)
 
             elif action_type == "press_key":
                 replay_plan.append({

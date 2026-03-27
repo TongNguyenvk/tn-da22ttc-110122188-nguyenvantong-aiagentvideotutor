@@ -49,7 +49,7 @@ def record_with_script(
             trace_path: Duong dan file trace.json
             trace: ExecutionTrace object
     """
-    from core.os_executor import execute_plan, focus_window_by_pid
+    from core.os_executor_v2 import execute_plan, focus_window_by_pid
     from core.media_engine import start_screen_recording, stop_recording
     from core.ui_inspector import get_element_tree
 

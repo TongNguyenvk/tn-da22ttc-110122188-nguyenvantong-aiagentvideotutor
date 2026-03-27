@@ -69,7 +69,8 @@ def run_os_pipeline(
     logger.info(f"  PID: {target_pid}")
     logger.info(f"{'='*60}")
 
-    from core.os_planning_agent import OSPlanningAgent
+    from core.os_planning_agent_v2 import OSPlanningAgent
+    from core.os_executor_v2 import execute_plan
 
     agent = OSPlanningAgent(
         pid=target_pid,

@@ -293,36 +293,27 @@ def execute_plan(
 
         # --- DRAG MOUSE (Bôi đen) ---
         elif action_type == "drag_mouse":
-            word_target = action.get("target_text")
-            if action.get("engine") == "word_com" and word_target:
-                from core.word_engine import WordEngine
-                engine = WordEngine()
-                engine.set_target_pid(target_pid)
-                if engine.connect():
-                    coords = engine.get_text_range_coords(word_target)
-                    if coords and len(coords) == 2:
-                        sx, sy = coords[0]
-                        ex, ey = coords[1]
-                        if not dry_run:
-                            pyautogui.moveTo(sx, sy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
-                            time.sleep(0.1)
-                            pyautogui.mouseDown(button='left')
-                            time.sleep(0.05)
-                            pyautogui.dragTo(ex, ey, duration=max(0.3, mouse_duration), tween=pyautogui.easeInOutQuad)
-                            time.sleep(0.1)
-                            pyautogui.mouseUp(button='left')
-                            time.sleep(0.2)
-                        trace.log_step(i, action_type, f"{step_desc} | Kéo chọn chữ '{word_target}' @({sx},{sy}) -> @({ex},{ey})", step_start_ms)
+            from core.universal_engine import get_universal_engine
+            engine = get_universal_engine()
+            
+            # Universal Adapter Check
+            coords = engine.get_range_coordinates(target_value, target_pid)
+            if coords and len(coords) == 2:
+                sx, sy = coords[0]
+                ex, ey = coords[1]
+                if not dry_run:
+                    pyautogui.moveTo(sx, sy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
+                    time.sleep(0.1)
+                    pyautogui.mouseDown(button='left')
+                    time.sleep(0.05)
+                    pyautogui.dragTo(ex, ey, duration=max(0.3, mouse_duration), tween=pyautogui.easeInOutQuad)
+                    time.sleep(0.1)
+                    pyautogui.mouseUp(button='left')
+                    time.sleep(0.2)
+                trace.log_step(i, action_type, f"{step_desc} | Kéo chọn '{target_value}' @({sx},{sy}) -> @({ex},{ey})", step_start_ms)
                 continue
                 
             def get_coords(sel, fallback_c):
-                eng = sel.get("engine")
-                if eng == "excel_com":
-                    from core.excel_engine import get_excel_engine
-                    engine = get_excel_engine()
-                    engine.set_target_pid(target_pid)
-                    return engine.get_cell_coordinates(sel.get("excel_range"))
-                
                 cx, cy = None, None
                 aid = sel.get("automation_id")
                 ctrl = sel.get("control_type")
@@ -381,53 +372,28 @@ def execute_plan(
 
         # --- CLICK ELEMENT (UIA selector hoặc tìm trong tree) ---
         elif action_type == "click_element":
-            # Bước 1: Ưu tiên tìm bằng UIA selector (từ plan.json mới)
             selector = action.get("selector", {})
             fallback = action.get("fallback_coords", {})
-            engine_type = selector.get("engine")
             elem_name = selector.get("name") or action.get("name", target_value)
             elem_ctrl = selector.get("control_type") or action.get("control_type")
             elem_aid = selector.get("automation_id") or action.get("automation_id")
 
-            # Xử lý đặc biệt cho Excel (Bypass UIA, dùng trực tiếp COM)
-            if engine_type == "excel_com":
-                cell_address = selector.get("excel_range") or target_value
-                logger.info(f"    -> Dùng COM Engine tìm tọa độ ô: {cell_address}")
-                from core.excel_engine import get_excel_engine
-                engine = get_excel_engine()
-                engine.set_target_pid(target_pid)  # Set PID để tính window offset
-                cx, cy = engine.get_cell_coordinates(cell_address)
-                
-                if cx is not None and cy is not None:
+            # 1. Universal Engine First (VIP Lanes + TextPattern)
+            from core.universal_engine import get_universal_engine
+            engine = get_universal_engine()
+            
+            if target_value:
+                cx_cy = engine.get_coordinates(target_value, target_pid)
+                if cx_cy:
+                    cx, cy = cx_cy
                     if not dry_run:
                         pyautogui.moveTo(cx, cy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
                         time.sleep(0.1)
+                        # Neu la Word thi WordAdapter tra ve de doubleClick chon tu, tam thoi cu click
                         pyautogui.click(cx, cy)
                         time.sleep(0.3)
-                    trace.log_step(i, action_type, f"{step_desc} | COM Excel \"{cell_address}\" @({cx},{cy})", step_start_ms)
+                    trace.log_step(i, action_type, f"{step_desc} | Universal Engine '{target_value}' @({cx},{cy})", step_start_ms)
                     continue
-                else:
-                    logger.warning(f"    -> COM lấy tọa độ thất bại cho ô {cell_address}, fallback qua các cách thông thường...")
-
-            # Xử lý đặc biệt cho Word (Bypass UIA, dùng trực tiếp COM)
-            elif engine_type == "word_com":
-                target_text = selector.get("target_text") or target_value
-                logger.info(f"    -> Dùng COM Engine tìm tọa độ chữ: '{target_text}'")
-                from core.word_engine import WordEngine
-                engine = WordEngine()
-                engine.set_target_pid(target_pid)
-                if engine.connect():
-                    cx, cy = engine.get_text_center(target_text)
-                    if cx is not None and cy is not None:
-                        if not dry_run:
-                            pyautogui.moveTo(cx, cy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
-                            time.sleep(0.1)
-                            pyautogui.doubleClick(cx, cy)  # Double click works well for a single word
-                            time.sleep(0.3)
-                        trace.log_step(i, action_type, f"{step_desc} | COM Word '{target_text}' @({cx},{cy})", step_start_ms)
-                        continue
-                    else:
-                        logger.warning(f"    -> COM lấy tọa độ thất bại cho chữ '{target_text}', fallback qua các cách thông thường...")
 
             target_elem = None
 
@@ -553,22 +519,51 @@ def execute_plan(
 
         # --- TYPE TEXT ---
         elif action_type == "type_text":
-            text = action.get("text", target_value)
+            text = action.get("text", "")
             char_delay = action.get("char_delay", 0.05)
-            selector = action.get("selector", {})
-            engine_type = selector.get("engine")
             
-            # Xử lý bơm text qua COM cho Excel
-            if engine_type == "excel_com" and not dry_run:
-                cell_address = selector.get("excel_range")
-                if cell_address:
-                    logger.info(f"  -> Dùng COM Engine bơm text vào ô: {cell_address}")
-                    from core.excel_engine import get_excel_engine
-                    engine = get_excel_engine()
-                    success = engine.inject_text(cell_address, text)
-                    if success:
-                        trace.log_step(i, "type", f"type (COM) \"{text[:40]}\"", step_start_ms)
-                        continue
+            from core.universal_engine import get_universal_engine
+            engine = get_universal_engine()
+            
+            if not dry_run:
+                cx, cy = None, None
+                if target_value and target_value != "Type text":
+                    cx_cy = engine.get_coordinates(target_value, target_pid)
+                    if cx_cy:
+                        cx, cy = cx_cy
+                        
+                if cx is None or cy is None:
+                    # Fallback to center of the window
+                    try:
+                        from pywinauto import Application
+                        _app = Application(backend="uia").connect(process=target_pid)
+                        win = _app.top_window()
+                        # If a text edit control is prominent, try to get it
+                        edit_ctrl = win.child_window(control_type="Document")
+                        if not edit_ctrl.exists():
+                            edit_ctrl = win.child_window(control_type="Edit")
+                            
+                        if edit_ctrl.exists():
+                            rect = edit_ctrl.rectangle()
+                        else:
+                            rect = win.rectangle()
+                        cx = (rect.left + rect.right) // 2
+                        cy = (rect.top + rect.bottom) // 2
+                    except Exception as e:
+                        logger.warning(f"  -> Could not resolve fallback center: {e}")
+
+                if cx is not None and cy is not None:
+                    pyautogui.moveTo(cx, cy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
+                    time.sleep(0.1)
+                    pyautogui.click(cx, cy)
+                    time.sleep(0.2)
+                    logger.info(f"  -> Cosmetic ghost cursor move/click @({cx},{cy}) before injection.")
+            
+            # Universal Injection
+            if target_value and target_value != "Type text" and not dry_run:
+                if engine.inject_data(target_value, text, target_pid):
+                    trace.log_step(i, "type", f"type (Universal Inject) \"{text[:40]}\"", step_start_ms)
+                    continue
 
             if not dry_run:
                 logger.info(f"  -> PyWinAuto Type: {text[:40]}...")
