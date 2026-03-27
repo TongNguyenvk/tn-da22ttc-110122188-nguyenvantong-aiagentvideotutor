@@ -64,3 +64,28 @@ Tài liệu này tổng hợp các lỗi đã ghi nhận từ giai đoạn đầ
 - **Sửa chữa (Trace Composer):**
   - Chuyển sang cú pháp `adelay=delays={ms}:all=1` giúp hỗ trợ cả track Mono và Stereo đồng nhất.
   - Bổ sung bộ lọc `volume=1.5` và tắt `normalize` trong `amix` để giữ âm lượng thuyết minh to, rõ và không bị tự động nén.
+
+## 4. Các Vấn Đề Khi Triển Khai OS-Level Automation
+
+### 4.1. Hạn Chế Phần Cứng & Ảo Hóa (Sandbox/Hyper-V)
+- **Vấn đề:** Để có môi trường ghi hình sạch (Clean-State), phương án lý tưởng là dùng Windows Sandbox hoặc Hyper-V. Tuy nhiên, giới hạn phần cứng thực tế (16GB RAM, trống ~4.5GB) khiến việc spin-up máy ảo (VM) liên tục tốn quá nhiều tài nguyên, gây giật lag FFmpeg và làm hỏng luồng ghi hình.
+- **Giải pháp:** Áp dụng mô hình **Process-Level Clean State**. Thay vì ảo hóa toàn hệ điều hành, Agent chỉ nhận diện tiến trình gốc (`app_executable`). Sau bước Agent dò đường, hệ thống sẽ tự động tắt (`kill`) tiến trình bị vấy bẩn và gọi mở lại (`spawn`) một cửa sổ ứng dụng mới tinh. Điều này mang lại môi trường ghi hình sạch tương đương Sandbox nhưng độ trễ và tiêu thụ tài nguyên gần như bằng không.
+
+### 4.2. Xung Đột Bộ Gõ Tiếng Việt (Unikey/EVKey Hooking)
+- **Vấn đề:** Khi mô phỏng gõ phím ở cấp OS bằng `pyautogui`, bộ gõ tiếng Việt chạy ngầm sẽ chặn ngang (keyboard hooking). Ví dụ: Agent gõ chữ tiếng Anh `test`, Unikey lập tức nối chuỗi thành `tét`, làm sai lệch kịch bản quay. Dùng Clipboard (`Ctrl+V`) giải quyết được độ chính xác nhưng lại làm mất đi hiệu ứng "gõ lạch cạch từng phím" chân thật của video.
+- **Sửa chữa:** Chuyển sang sử dụng `win.type_keys()` của kiến trúc `pywinauto`. Lệnh này bơm trực tiếp các gói lệnh `WM_CHAR` (chứa toàn bộ Text đa ngôn ngữ) vào API của Application Window, hoàn toàn "tàng hình" khỏi mắt của Unikey/EVKey. Kết quả: Khắc phục sự phá bĩnh của hệ thống Telex, hỗ trợ nhập 100% tiếng Việt nguyên gốc, lại được tham số hóa `pause=0.05` để giữ chất lượng hiệu ứng ấn phím tự nhiên trên Video thành phẩm.
+
+### 4.3. Lỗi Lệch Tọa Độ (Offset) & Hàm Nhập Bị Crash Trên Excel
+- **Vấn đề:** 
+  - (1) Hàm tọa độ ảo COM (`PointsToScreenPixels`) bị sai số trầm trọng khi màn hình dùng DPI Scale khác 100% hoặc thu phóng thanh Ribbon. Chuột đáp trượt khung ô làm thao tác thất bại.
+  - (2) Truyền công thức chứa phép tính (bắt đầu bằng `=`) qua vòng lặp theo thời gian thực (từng ký tự) vào COM `.Value` khiến Excel ném Exception `NAME_NOT_FOUND (-2146827284)` vì cố thông dịch công thức dở dang. Hơn nữa, việc lặp lại `Range.Select()` tạo ra viền xanh bao quanh ô trước khi chuột tiến lại, phá vỡ tính "người thật" (human-like) của luồng tutorial.
+- **Sửa chữa:**
+  - **Tọa độ UIA Tuyệt Đối:** Bỏ COM tĩnh, dùng thư viện `uiautomation` bắn thẳng tia quét vào `DataItemControl` trên màn hình lấy giá trị pixel vật lý cuối cùng (`BoundingRectangle`), đảm bảo độ chính xác 100% vĩnh viễn. Thay thế `Range.Select()` bằng `ActiveWindow.ScrollRow` để nhẹ nhàng cuộn mục tiêu vào tầm nhìn mà không làm bôi đen vật thể.
+  - **Thủ thuật (') Ảo Thuật Formular:** Tích hợp logic chèn ký tự nháy đơn (`'`) dẫn đầu chuỗi mô phỏng gõ tay (`'=COUNTIF`). Excel sẽ khóa cửa kiểm tra lỗi cú pháp vì quy chụp đó là văn bản. Cuối quá trình gõ, lệnh `Range.Formula` sẽ tước bỏ nháy đơn và trả về công thức số liệu chuẩn xác, giữ nguyên vẹn giá trị trị trực quan trên Video FFmpeg.
+
+### 4.4. Mất Môi Trường PowerPoint & FFmpeg Negative Bounds
+- **Vấn đề:** Kịch bản Dọn dẹp (`Cleanup State`) tự tắt (`Kill`) tiến trình PowerPoint làm văng cả Slide đang mở sẵn của Editor, sau đó tự spawn lại bằng Popen gây lỗi `FileNotFoundError` vì App không nằm ở PATH root. Cùng lúc đó khi bật SlideShow Toàn màn hình, hệ điều hành trả về tọa độ âm (Ví dụ `Left: -9, Top: -9`). FFmpeg `gdigrab` cự tuyệt quay phim và `exited immediately`.
+- **Sửa chữa:**
+  - Định tuyến lại `os_pipeline.py` với cờ `--ppt`, gán quyền không Kill Process cho `powerpnt.exe` giống như quy định cũ của Excel.
+  - Bổ sung lưới tọa độ (`Clamping`) dùng `min/max` cùng thuật toán quét `GetSystemMetrics` trực tiếp vào `media_engine.py`. Ép mốc âm lùi về `0` và vạt bớt `Width/Height` cho bằng với màn vật lý, giúp FFmpeg record vô tư với mọi chế độ FullScreen của Application.
+
