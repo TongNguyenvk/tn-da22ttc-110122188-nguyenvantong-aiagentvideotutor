@@ -29,6 +29,7 @@ def record_with_script(
     timeout_seconds: int = 120,
     mouse_duration: float = 0.5,
     framerate: int = 30,
+    screenshot_callback = None,
 ) -> dict:
     """
     Quay video dong bo voi thuc thi kich ban.
@@ -42,6 +43,7 @@ def record_with_script(
         timeout_seconds: Timeout tong.
         mouse_duration: Thoi gian di chuyen chuot (giay).
         framerate: FPS cho video.
+        screenshot_callback: Optional callback(step_index, step_data) duoc goi sau moi action.
 
     Returns:
         Dict voi:
@@ -108,6 +110,8 @@ def record_with_script(
 
     # Buoc 4: Thuc thi kich ban
     logger.info("Step 4: Execute plan")
+    if screenshot_callback:
+        logger.info("  Screenshot callback: ENABLED")
     try:
         trace = execute_plan(
             plan=plan,
@@ -117,6 +121,7 @@ def record_with_script(
             mouse_duration=mouse_duration,
             element_tree=element_tree,
             recording_start_time=recording_start_time,
+            screenshot_callback=screenshot_callback,
         )
     except Exception as e:
         logger.error(f"Execution error: {e}")

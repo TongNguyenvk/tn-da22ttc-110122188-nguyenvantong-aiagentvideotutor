@@ -89,25 +89,31 @@ class WordAdapter(BaseAdapter):
             res = range_obj.Find.Execute(FindText=target_text)
             
             if res or range_obj.Find.Found:
-                # Word COM GetPoint:
-                # Trả về tuple (Left, Top, Width, Height) theo Tọa độ Vật lý
-                left, top, width, height = win.GetPoint(0, 0, 0, 0, range_obj)
+                # De boi den multi-line hoac doan van chuan xac nhat, ta can tach Range ra lam hai diem: Start va End
+                # Thay vi GetPoint nguyen ca mot khoi (se bi keo ngang qua giua doan van)
+                
+                rng_start = range_obj.Duplicate
+                rng_start.Collapse(Direction=1)  # 1 = wdCollapseStart
+                left1, top1, width1, height1 = win.GetPoint(0, 0, 0, 0, rng_start)
+                
+                rng_end = range_obj.Duplicate
+                rng_end.Collapse(Direction=0)  # 0 = wdCollapseEnd
+                left2, top2, width2, height2 = win.GetPoint(0, 0, 0, 0, rng_end)
                 
                 # Check nếu cửa sổ bị minimize (tọa độ âm)
-                if left < -10000 or top < -10000:
-                    logger.warning(f"  [WordEngine] Word đang bị Minimize, tọa độ viễn tưởng: {left}, {top}")
+                if left1 < -10000 or top1 < -10000:
+                    logger.warning(f"  [WordEngine] Word dang bi Minimize, toa do am: {left1}, {top1}")
                     return None
-
-                scale = get_dpi_scale_factor()
                 
-                # Để kéo thả chữ chính xác, ta click từ góc trái giữa của khung bao và kéo sang phải
-                start_x = int(left) + 5  # xích vào 5 pixel để chắc chắn trúng chữ đầu
-                start_y = int(top + height/2)
+                # Toa do xuat phat: Ngay ben trai cua ky tu the nhat
+                start_x = int(left1) + 2
+                start_y = int(top1 + height1 / 2)
                 
-                end_x = int(left + width) - 5 # xích lùi 5 pixel trúng chữ cuối
-                end_y = int(top + height/2)
+                # Toa do ket thuc: Ngay ben phai cua ky tu cuoi cung (cong them 5px de bao dam bao trum het)
+                end_x = int(left2 + width2) + 5
+                end_y = int(top2 + height2 / 2)
                 
-                logger.info(f"  [WordEngine] Bắt thành công '{target_text}' tại X1={start_x}, X2={end_x}")
+                logger.info(f"  [WordEngine] Bat thanh cong chuoi tai ({start_x}, {start_y}) den ({end_x}, {end_y})")
                 return [(start_x, start_y), (end_x, end_y)]
             else:
                 logger.warning(f"  [WordEngine] Không tìm thấy chuỗi '{target_text}' trong văn bản.")

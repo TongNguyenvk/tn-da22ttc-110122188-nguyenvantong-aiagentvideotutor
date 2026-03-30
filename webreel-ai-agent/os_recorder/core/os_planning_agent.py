@@ -915,6 +915,7 @@ def replay_plan_with_recording(
     output_dir: str = "workspace",
     video_name: str = "replay_video",
     framerate: int = 30,
+    screenshot_callback = None,
 ) -> dict:
     """
     Fix #3: Doc plan.json va dien lai muot ma + quay FFmpeg.
@@ -922,6 +923,9 @@ def replay_plan_with_recording(
     Day la buoc 2 cua quy trinh:
     1. plan-only: Agent do duong, sinh plan.json
     2. record-replay: Doc plan.json, quay video muot.
+    
+    Args:
+        screenshot_callback: Optional callback(step_index, step_data) duoc goi sau moi action
     """
     from core.sync_recorder import record_with_script
 
@@ -932,6 +936,8 @@ def replay_plan_with_recording(
     logger.info(f"  Record-Replay: {video_name}")
     logger.info(f"  Plan: {plan_path} ({len(plan)} actions)")
     logger.info(f"  PID: {target_pid}")
+    if screenshot_callback:
+        logger.info(f"  Screenshot callback: ENABLED")
     logger.info(f"{'='*60}")
 
     result = record_with_script(
@@ -942,6 +948,7 @@ def replay_plan_with_recording(
         dry_run=False,  # Quay that
         timeout_seconds=120,
         framerate=framerate,
+        screenshot_callback=screenshot_callback,
     )
 
     return result

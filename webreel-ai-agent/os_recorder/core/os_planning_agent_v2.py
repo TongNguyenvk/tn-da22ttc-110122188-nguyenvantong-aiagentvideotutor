@@ -146,9 +146,9 @@ Each element has: [index] ControlType "Name" (centerX, centerY) widthXheight
 AVAILABLE ACTIONS:
 - click_element: Click an element by its index. Use "element_index" field. (To click specific text or a specific cell block, use the "target_value" field instead).
 - drag_mouse: Drag the mouse from one element to another to select/highlight. Use "start_index" and "end_index" fields from the UI ELEMENTS list. (To highlight a specific phrase or drag across a cell range, use the "target_value" field containing the exact phrase/range).
-- type_text: Type text into the focused element. Use "text" field. (If typing into a specific cell or field, you MUST also output the "target_value" field).
-- press_key: Press a SAFE key. Allowed: space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end, 1-9. Use "key" field. Optional use "repeat" integer field.
-- press_hotkey: Press a combination of keys together. Use "keys" array field. Allowed: shift, ctrl, alt plus all keys from press_key. Optional use "repeat" integer field to press multiple times.
+- type_text: Type text into the focused element. Use "text" field.
+- press_key: Press a SAFE key. Allowed: a-z, 0-9, space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end. Use "key" field. Optional use "repeat" integer field.
+- press_hotkey: Press a combination of keys together. Use "keys" array field (e.g. ["ctrl", "b"]). You can also optionally use "repeat" integer field to press it multiple times. Allowed modifiers: shift, ctrl, alt, win plus all regular keys. **CRITICAL: You MUST use `press_hotkey` for ALL text formatting (bold, color, size, alignment) and slide navigation (F5, next) instead of clicking the Ribbon UI!** Do not click Ribbon buttons!
 - scroll: Scroll mouse wheel. Use "amount" field (positive=up, negative=down).
 - wait: Wait for a duration. Use "duration_ms" field.
 - done: Task is complete. No more actions needed.
@@ -167,14 +167,34 @@ RESPONSE FORMAT (JSON only):
 RULES:
 1. Return EXACTLY ONE action per response.
 2. The "narration" field is for video voiceover. Write in Vietnamese WITH FULL DIACRITICS. Be engaging like a lecturer.
-3. Set "is_done": true when the task is complete. Include a closing narration.
-4. For click_element, ALWAYS use the element_index from the UI ELEMENTS list, UNLESS you are interacting with specific text/cells where you should use target_value.
-5. For type_text, the text will be typed into whatever element currently has focus or the element matched by target_value.
-6. NEVER use dangerous keys (delete, backspace, win).
-7. If the UI has changed after an action, analyze the NEW screenshot before deciding.
-8. If you want to interact with a specific UI element containing specific text or data, ALWAYS emit `target_value` so the Universal Engine can find its coordinates perfectly.
-"""
+3. Set "is_done": true ONLY when the FULL MULTI-PART task is 100% complete. If the task asks for multiple things (e.g., "increase size AND italicize"), you MUST perform one action, and on the next turn perform the other action. Do NOT set is_done=true until ALL requirements of the user task are met! Include a closing narration when actually done.
+4. For click_element on UI buttons, menus, Ribbon tabs, dropdowns (e.g. Font Size, Insert, Bold): ALWAYS use the "element_index" from the UI ELEMENTS list! DO NOT use "target_value" for UI controls!
+5. ONLY use "target_value" when you want to interact with TEXT CONTENT inside the document/spreadsheet workspace itself (e.g. clicking a specific sentence, dragging a cell range, or targeting a text you just typed).
+6. For type_text, the text will be typed into whatever element currently has focus.
+7. NEVER use dangerous keys (delete, backspace, win).
+8. If the UI has changed after an action, analyze the NEW screenshot before deciding.
+9. CRITICAL: When using 'press_hotkey', your 'narration' MUST explicitly read out loud the key combination being pressed so the viewer can learn it. Examples: "ấn tổ hợp phím Control và B", "sử dụng phím tắt Control, Shift và phím lớn hơn".
 
+RECOMMENDED HOTKEYS (Use these INSTEAD OF click_element):
+- **Word / Excel Formatting**:
+  - `["ctrl", "b"]`: Bold
+  - `["ctrl", "i"]`: Italic
+  - `["ctrl", "u"]`: Underline
+  - `["ctrl", "e"]`: Align Center
+  - `["ctrl", "l"]`: Align Left
+  - `["ctrl", "r"]`: Align Right
+  - `["ctrl", "j"]`: Justify
+  - `["ctrl", "]"]`: Increase Font Size (Use "repeat": 5 to make it visibly larger)
+  - `["ctrl", "["]`: Decrease Font Size (Use "repeat": 5 to make it visibly smaller)
+  - `["ctrl", "z"]`: Undo
+  - `["ctrl", "y"]`: Redo
+- **PowerPoint Navigation**:
+  - `["f5"]`: Start Slide Show from beginning
+  - `["shift", "f5"]`: Start Slide Show from current slide
+  - `["space"]` or `["right"]` or `["enter"]` or `["pagedown"]`: Next Slide / Next Animation
+  - `["left"]` or `["pageup"]` or `["backspace"]`: Previous Slide
+  - `["esc"]`: End Slide Show
+"""
 
 # ---------------------------------------------------------------------------
 # Agent step result
@@ -413,6 +433,8 @@ class OSPlanningAgent:
                     return
             elif action_type == "drag_mouse":
                 if engine.get_range_coordinates(target_val, app.process):
+                    # Thực hiện focus (thay đổi visual) để screenshot tiếp theo Agent nhận ra đã drag bôi đen
+                    engine.focus_element(target_val, app.process)
                     action.pop("start_index", None)
                     action.pop("end_index", None)
                     time.sleep(0.5)
@@ -483,15 +505,15 @@ class OSPlanningAgent:
             if safe:
                 logger.info(f"  -> Silent hotkey: {keys} (x{repeat})")
                 try:
-                    from pywinauto import keyboard as py_kb
-                    modifier_map = {'shift': '+', 'ctrl': '^', 'alt': '%'}
-                    mods_str = "".join(modifier_map.get(m.lower(), "") for m in keys[:-1])
-                    main_key = keys[-1].upper()
-                    if len(main_key) > 1 or main_key in ["SPACE", "ENTER"]:
-                        send_str = f"{mods_str}{{{main_key} {repeat}}}"
-                    else:
-                        send_str = f"{mods_str}{main_key}" * repeat
-                    py_kb.send_keys(send_str, pause=0.01)
+                    import pyautogui
+                    try:
+                        win = app.top_window()
+                        win.set_focus()
+                    except:
+                        pass
+                    for _ in range(repeat):
+                        pyautogui.hotkey(*[k.lower() for k in keys])
+                        time.sleep(0.01)
                     time.sleep(0.05)
                 except Exception as e:
                     logger.warning(f"  -> Silent hotkey failed: {e}")
@@ -867,6 +889,29 @@ class OSPlanningAgent:
                 "target_value": "Post-action pause",
                 "duration_ms": 300,
             })
+
+        # --- DEDUPLICATE ACTIONS ---
+        # Gemini thường sinh ra cùng 1 action ở bước N và bước N+1 (để mark Done: True)
+        # Ta cần lọc các action thực thi trùng lặp liên tiếp để tránh click/drag/type 2 lần
+        deduped_plan = []
+        last_real_action = None
+        for a in replay_plan:
+            if a["action_type"] not in ("pause", "wait"):
+                if last_real_action and last_real_action["action_type"] == a["action_type"]:
+                    if a.get("target_value") == last_real_action.get("target_value") and \
+                       a.get("text") == last_real_action.get("text"):
+                        logger.info(f"  [Auto-Fix] Bỏ qua hành động {a['action_type']} trùng lặp: {a.get('target_value')}")
+                        # Xoá luôn pause dư thừa được tạo ra ngay trước hành động trùng này (Narration pause)
+                        if deduped_plan and deduped_plan[-1]["action_type"] == "pause":
+                            # Chỉ xóa narration pause của step trùng
+                            if "Narration pause" in deduped_plan[-1].get("target_value", ""):
+                                deduped_plan.pop()
+                                
+                        continue
+                last_real_action = a
+            deduped_plan.append(a)
+            
+        replay_plan = deduped_plan
 
         # Closing narration (chỉ thêm nếu KHÁC narration cuối)
         closing_step = next(

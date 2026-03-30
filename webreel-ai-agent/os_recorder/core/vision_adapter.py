@@ -1,10 +1,17 @@
 import logging
-import cv2
-import numpy as np
-import mss
-from core.base_adapter import BaseAdapter
 
 logger = logging.getLogger(__name__)
+
+try:
+    import cv2
+    import numpy as np
+    import mss
+    HAS_CV = True
+except ImportError:
+    HAS_CV = False
+    logger.warning("  [VisionAdapter] Thieu thu vien cv2/numpy/mss. Vision Fallback bi vo hieu hoa.")
+    
+from core.base_adapter import BaseAdapter
 
 class VisionAdapter(BaseAdapter):
     """
@@ -13,7 +20,10 @@ class VisionAdapter(BaseAdapter):
     """
     def __init__(self):
         super().__init__()
-        self.sct = mss.mss()
+        if HAS_CV:
+            self.sct = mss.mss()
+        else:
+            self.sct = None
 
     def connect(self) -> bool:
         """
@@ -51,6 +61,13 @@ class VisionAdapter(BaseAdapter):
         """
         Không thể inject data trực tiếp qua màn hình pixel được.
         Phải dùng Action/Keyboard, nên Adapter trả về False để đẩy về luồng Keyboard.
+        """
+        return False
+        
+    def focus_element(self, target_value: str) -> bool:
+        """
+        Vision adapter không thay đổi trạng thái UI để focus, chỉ quét pixel bề mặt. 
+        Luôn trả về False để đẩy về luồng chuột thật.
         """
         return False
         

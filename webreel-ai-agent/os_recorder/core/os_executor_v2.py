@@ -91,6 +91,7 @@ SAFE_KEYS = {
     "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
     "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
     "shift", "ctrl", "alt",
+    "<", ">", "[", "]",
 }
 
 DANGEROUS_KEYS = {
@@ -198,6 +199,7 @@ def execute_plan(
     mouse_duration: float = 0.5,
     element_tree=None,
     recording_start_time: float = None,
+    screenshot_callback = None,
 ) -> ExecutionTrace:
     """
     Thuc thi kich ban hanh dong voi mouse + keyboard + execution trace.
@@ -214,6 +216,7 @@ def execute_plan(
         timeout_seconds: Tu dong dung sau N giay.
         mouse_duration: Thoi gian di chuyen chuot (giay), mac dinh 0.5s.
         element_tree: UIElement tree da cache (neu None thi se lay tu PID).
+        screenshot_callback: Optional callback(step_index, step_data) duoc goi sau moi action.
 
     Returns:
         ExecutionTrace chua lich su thuc thi tuong thich voi trace_composer.py.
@@ -279,15 +282,9 @@ def execute_plan(
                 trace.log_step(i, action_type, f"BLOCKED or INVALID: {keys}", step_start_ms)
                 continue
             if not dry_run:
-                from pywinauto import keyboard as py_kb
-                modifier_map = {'shift': '+', 'ctrl': '^', 'alt': '%'}
-                mods_str = "".join(modifier_map.get(m.lower(), "") for m in keys[:-1])
-                main_key = keys[-1].upper()
-                if len(main_key) > 1 or main_key in ["SPACE", "ENTER"]:
-                    send_str = f"{mods_str}{{{main_key} {repeat}}}"
-                else:
-                    send_str = f"{mods_str}{main_key}" * repeat
-                py_kb.send_keys(send_str, pause=0.05)
+                for _ in range(repeat):
+                    pyautogui.hotkey(*[k.lower() for k in keys])
+                    time.sleep(0.05)
                 time.sleep(0.2)
             trace.log_step(i, action_type, f"{step_desc} (x{repeat})", step_start_ms)
 
@@ -611,6 +608,22 @@ def execute_plan(
         # Cap nhat end_time cho step cuoi
         if trace.entries:
             trace.entries[-1]["end_time_ms"] = trace._elapsed_ms()
+        
+        # Goi screenshot callback sau moi action (neu co)
+        # Chi chup sau cac action that (khong chup pause tru narration pause)
+        should_screenshot = False
+        if screenshot_callback and not dry_run:
+            if action_type != "pause":
+                should_screenshot = True
+            elif action_type == "pause" and "[NARRATION:" in description:
+                # Chup sau narration pause de co anh voi noi dung moi
+                should_screenshot = True
+        
+        if should_screenshot:
+            try:
+                screenshot_callback(i, action)
+            except Exception as e:
+                logger.warning(f"    Screenshot callback error at step {i}: {e}")
 
     logger.info(f"Execution completed: {len(trace.entries)} traced steps")
     return trace

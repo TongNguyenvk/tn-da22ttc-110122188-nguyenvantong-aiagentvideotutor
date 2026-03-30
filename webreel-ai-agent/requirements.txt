@@ -1,8 +1,7 @@
-# Core dependencies (lightweight, install first)
+# Core dependencies
 python-dotenv>=1.0.0
 requests>=2.31.0
 pydantic>=2.0.0
-websocket-client>=1.8.0
 
 # FastAPI backend
 fastapi>=0.115.0
@@ -10,25 +9,24 @@ uvicorn>=0.32.0
 python-multipart>=0.0.12
 websockets>=14.0
 
-# Browser automation
-playwright>=1.40.0
+# Desktop UI
+flet>=0.24.0
+
+# Browser automation (CDP-based, no Playwright browser needed)
 browser-use>=0.12.0
-playwright-stealth>=1.0.6
+playwright>=1.40.0
+
+# OS Automation
+pywinauto>=0.6.8
+pyautogui>=0.9.54
+uiautomation>=2.0.18
+mss>=9.0.0
+pygetwindow>=0.0.9
+pywin32>=306
 
 # Gemini AI (primary LLM)
 google-genai>=1.0.0
 
-# UI and utilities (use compatible versions)
-streamlit>=1.55.0
-Pillow==12.1.0
-
-# Testing (optional, can be removed for production)
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-httpx>=0.27.0
-
-# Audio duration measurement
+# Audio & Media
+edge-tts>=6.1.0
 mutagen>=1.47.0
-
-# Video processing (install from git for Pillow 12 support)
-moviepy @ git+https://github.com/Zulko/moviepy.git@master

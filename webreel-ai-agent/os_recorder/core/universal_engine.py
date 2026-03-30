@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 # Singleton cache cho adapter instances (QUAN TRONG: khong tao moi moi lan)
 _excel_adapter_instance = None
 _word_adapter_instance = None
+_ppt_adapter_instance = None
 _uia_adapter_instance = None
 _vision_adapter_instance = None
 
@@ -23,6 +24,13 @@ def _get_word_adapter():
         from core.word_adapter import WordAdapter
         _word_adapter_instance = WordAdapter()
     return _word_adapter_instance
+
+def _get_ppt_adapter():
+    global _ppt_adapter_instance
+    if _ppt_adapter_instance is None:
+        from core.powerpoint_adapter import PowerPointAdapter
+        _ppt_adapter_instance = PowerPointAdapter()
+    return _ppt_adapter_instance
 
 def _get_uia_adapter():
     global _uia_adapter_instance
@@ -54,6 +62,8 @@ class UniversalEngine:
                 return "excel"
             elif name == "winword.exe":
                 return "word"
+            elif name == "powerpnt.exe":
+                return "powerpoint"
             return "general"
         except Exception as e:
             logger.warning(f"  [UniversalEngine] Không thể lấy context từ PID {target_pid}: {e}")
@@ -80,6 +90,15 @@ class UniversalEngine:
                 word_adapter.set_target_pid(target_pid)
                 if word_adapter.connect():
                     cx_cy = word_adapter.get_coordinates(target_value)
+                    if cx_cy:
+                        return cx_cy
+
+        elif context == "powerpoint":
+            ppt_adapter = _get_ppt_adapter()
+            if ppt_adapter:
+                ppt_adapter.set_target_pid(target_pid)
+                if ppt_adapter.connect():
+                    cx_cy = ppt_adapter.get_coordinates(target_value)
                     if cx_cy:
                         return cx_cy
 
@@ -124,6 +143,13 @@ class UniversalEngine:
                 if word_adapter.connect() and word_adapter.focus_element(target_value):
                     return True
                     
+        elif context == "powerpoint":
+            ppt_adapter = _get_ppt_adapter()
+            if ppt_adapter:
+                ppt_adapter.set_target_pid(target_pid)
+                if ppt_adapter.connect() and ppt_adapter.focus_element(target_value):
+                    return True
+                    
         # 2. Standard Lane
         uia_adapter = _get_uia_adapter()
         if uia_adapter:
@@ -150,8 +176,13 @@ class UniversalEngine:
             adapter = _get_word_adapter()
             adapter.set_target_pid(target_pid)
             if adapter.connect():
-                res = adapter.get_range_coordinates(target_value)
-                if res: return res
+                return adapter.get_range_coordinates(target_value)
+
+        elif context == "powerpoint":
+            adapter = _get_ppt_adapter()
+            adapter.set_target_pid(target_pid)
+            if adapter.connect():
+                return adapter.get_range_coordinates(target_value)
 
         # 2. Standard Lane
         uia_adapter = _get_uia_adapter()

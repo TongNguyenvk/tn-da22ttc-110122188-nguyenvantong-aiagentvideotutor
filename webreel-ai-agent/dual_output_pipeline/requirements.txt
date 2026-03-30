@@ -1,0 +1,19 @@
+# Core dependencies
+pyautogui==0.9.54
+pillow==10.2.0
+python-docx==1.1.0
+pywin32==306
+
+# Screenshot and image processing
+opencv-python==4.9.0.80
+mss==9.0.1
+
+# PDF generation
+reportlab==4.1.0
+
+# Async support
+aiofiles==23.2.1
+
+# Optional: Distributed processing
+# celery==5.3.6
+# redis==5.0.1

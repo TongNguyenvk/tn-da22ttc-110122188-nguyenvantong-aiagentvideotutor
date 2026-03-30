@@ -30,6 +30,11 @@ def run_os_pipeline(
     dry_run: bool = False,
     skip_tts: bool = False,
     app_executable: str = None,
+    progress_callback=None,
+    cancel_event=None,
+    review_event=None,
+    review_result_holder=None,
+    ready_event=None,
 ) -> dict:
     """
     Pipeline chính cho OS-level screen recording.
@@ -115,6 +120,56 @@ def run_os_pipeline(
     result["narrations"] = narrations
     logger.info(f"  Plan: {plan_path} ({len(plan)} actions, {len(real_actions)} thật)")
     logger.info(f"  Narrations: {len(narrations)}")
+
+    # Progress callback: Phase 1 complete
+    if progress_callback:
+        progress_callback(1.0, f"Phase 1 hoàn tất: {len(real_actions)} hành động, {len(narrations)} lời thoại")
+
+    # Check cancellation
+    if cancel_event and cancel_event.is_set():
+        logger.info("Pipeline cancelled after Phase 1")
+        return result
+
+    # ================================================================
+    # PHASE 2.5: Review TTS Script (UI callback)
+    # ================================================================
+    if narrations and review_event and review_result_holder is not None:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"  PHASE 2.5: Review TTS Script ({len(narrations)} segments)")
+        logger.info(f"{'='*60}")
+
+        if progress_callback:
+            progress_callback(2.5, "Phase 2.5: Chờ review lời thoại...", narrations)
+
+        # Block until UI signals review is done
+        review_event.wait()
+        review_event.clear()
+
+        if cancel_event and cancel_event.is_set():
+            logger.info("Pipeline cancelled during Phase 2.5")
+            return result
+
+        # Apply reviewed narrations if provided
+        reviewed = review_result_holder.get("reviewed_script")
+        if reviewed:
+            narrations = reviewed
+            result["narrations"] = narrations
+            logger.info(f"  Review accepted: {len(narrations)} segments")
+
+            # Update plan.json with reviewed narrations
+            narration_idx = 0
+            for step in plan:
+                desc = step.get("description", "")
+                match_step = re.match(r"\[NARRATION:(\d+)\]", desc)
+                if match_step and narration_idx < len(narrations):
+                    step["description"] = f"[NARRATION:{narration_idx}] {narrations[narration_idx]['text']}"
+                    narration_idx += 1
+
+            with open(plan_path, "w", encoding="utf-8") as f:
+                json.dump(plan, f, indent=2, ensure_ascii=False)
+            logger.info("  Plan.json updated with reviewed narrations")
+        else:
+            logger.info("  Review cancelled, using original narrations")
 
     if not agent_result.is_complete:
         logger.warning("  Agent chưa hoàn tất task!")
@@ -265,13 +320,24 @@ def run_os_pipeline(
     # PHASE 3: Record-Replay (quay video tu plan.json)
     # ================================================================
     if not dry_run:
-        print("\n" + "*"*60)
-        print("  [DỪNG CHỜ] AGENT ĐÃ LÊN KỊCH BẢN & SINH AUDIO XONG!")
-        print("  Để hình ảnh khi ghi hình được sạch sẽ và trơn tru,")
-        print("  Xin bạn hãy thủ công Undo (Ctrl+Z) hoặc khôi phục file Excel")
-        print("  về lại chính xác y như trạng thái ban đầu.")
-        print("*"*60)
-        input("  >>> BẤM PHÍM [ENTER] TẠI CỬA SỔ CMD ĐỂ TIẾN HÀNH QUAY... <<<")
+        if progress_callback:
+            # UI mode: signal ready-to-record via callback, wait for ready_event
+            progress_callback(3.0, "Sẵn sàng quay. Hãy reset trạng thái ứng dụng rồi bấm Xác nhận.")
+            if ready_event:
+                ready_event.wait()
+                ready_event.clear()
+            if cancel_event and cancel_event.is_set():
+                logger.info("Pipeline cancelled before Phase 3")
+                return result
+        else:
+            # CLI mode: giữ nguyên input() truyền thống
+            print("\n" + "*"*60)
+            print("  [DỪNG CHỜ] AGENT ĐÃ LÊN KỊCH BẢN & SINH AUDIO XONG!")
+            print("  Để hình ảnh khi ghi hình được sạch sẽ và trơn tru,")
+            print("  Xin bạn hãy thủ công Undo (Ctrl+Z) hoặc khôi phục file Excel")
+            print("  về lại chính xác y như trạng thái ban đầu.")
+            print("*"*60)
+            input("  >>> BẤM PHÍM [ENTER] TẠI CỬA SỔ CMD ĐỂ TIẾN HÀNH QUAY... <<<")
         logger.info(f"\n{'='*60}")
         logger.info(f"  PHASE 3: Record-Replay")
         logger.info(f"{'='*60}")

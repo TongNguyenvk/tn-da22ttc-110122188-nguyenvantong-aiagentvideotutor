@@ -153,8 +153,8 @@ class ExcelAdapter(BaseAdapter):
                 if self._target_pid:
                     try:
                         import uiautomation as auto
-                        # Tìm cửa sổ Excel đang chứa bảng tính này
-                        win = auto.WindowControl(searchDepth=1, ClassName='XLMAIN')
+                        # Tìm cửa sổ Excel đang chứa bảng tính này đúng theo PID của agent
+                        win = auto.WindowControl(searchDepth=1, ClassName='XLMAIN', ProcessId=self._target_pid)
                         if win.Exists(0, 0):
                             win_rect = win.BoundingRectangle
                             cell_ui = win.DataItemControl(Name=cell_address)
@@ -242,8 +242,69 @@ class ExcelAdapter(BaseAdapter):
     def get_range_coordinates(self, target_value: str):
         """Lấy tọa độ start và end [(x1,y1), (x2,y2)] cho một dãy ô nếu cần thiết kéo thả, 
         nhưng hiện tại Excel drag thường xử lý qua UIA / fallback tọa độ. Tạm stub."""
-        # TODO: Implement if needed.
-        return None
+        if not self.connected or not self._excel:
+            if not self.connect():
+                return None
+                
+        self._check_thread()
+        
+        if ":" not in target_value:
+            return None
+            
+        parts = target_value.split(":")
+        start_cell = parts[0].strip()
+        end_cell = parts[1].strip()
+        
+        # Go start_cell
+        start_coords = self.get_coordinates(start_cell)
+        if not start_coords:
+            return None
+        
+        # Luu y: neu end_cell o xa, get_coordinates se tu dogn cuon (scroll) window.
+        # Khi Excel bi cuon, toa do start_coords ban dau se khong con khop voi O tren man hinh nua!
+        # Nhung de ho tro boi den (drag) tot nhat, chung ta dam bao vung bôi đen phai hien thi tren man hinh.
+        # Neu no lech, agent co the khong keo duoc.
+        
+        # Lay end_coords
+        end_coords = self.get_coordinates(end_cell)
+        if not end_coords:
+            return None
+            
+        # Cuon lai ve start cell de drag bat dau tu diem dau!
+        # (Vi dragTo cua pyautogui se tu dong mo rong vung bôi đen neu keo ra rit man hinh)
+        self.get_coordinates(start_cell)
+        
+        # Tinh toan offset chi hoat dong chinh xac neu dragTo ban dau bat dau tu top-left
+        # Do get_coordinates(start_cell) da tra ve window o vi tri start_cell tren cung.
+        # Chung ta se Tinh toa do cua end_cell tuong doi theo start_cell thong qua UIA 
+        # hoac don gian la tra ve start_coords va end_coords (neu end_cell van hieng thi).
+        
+        # Don gian nhat (nhu ban cu): Tra ve luon start_coords va end_coords!
+        # Trong ban cu, chung ta tim luon tren man hinh UI!
+        
+        try:
+            import uiautomation as auto
+            win = auto.WindowControl(searchDepth=1, ClassName='XLMAIN', ProcessId=self._target_pid)
+            if win.Exists(0, 0):
+                # Lay truc tiep toa do pixel bang UIA khi ma ca 2 cung nam tren man hinh
+                cell_start_ui = win.DataItemControl(Name=start_cell)
+                cell_end_ui = win.DataItemControl(Name=end_cell)
+                
+                if cell_start_ui.Exists(0.1, 0.1) and cell_end_ui.Exists(0.1, 0.1):
+                    rs = cell_start_ui.BoundingRectangle
+                    re = cell_end_ui.BoundingRectangle
+                    sx = (rs.left + rs.right) // 2
+                    sy = (rs.top + rs.bottom) // 2
+                    ex = (re.left + re.right) // 2
+                    ey = (re.top + re.bottom) // 2
+                    return [(sx, sy), (ex, ey)]
+        except:
+            pass
+            
+        # Neu UIA khong tim thay ca 2 cung luc, chung ta se phai su dung diem fallback (chu yeu cho drag qua xa)
+        # Nhung UIA se handle duoc 99% truong hop tren cung 1 man hinh.
+        
+        return [start_coords, end_coords]
 
     def inject_data(self, target_value: str, data: str) -> bool:
         """Bơm text thẳng vào Value của Cell để bypass Unikey / Bàn phím."""
