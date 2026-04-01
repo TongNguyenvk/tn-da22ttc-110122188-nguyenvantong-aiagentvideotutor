@@ -24,6 +24,7 @@ import json
 import time
 import logging
 import ctypes
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -189,6 +190,86 @@ def focus_window_by_hwnd(hwnd: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tier 2 Fallback: OpenCV Template Matching (nhe, optional)
+# ---------------------------------------------------------------------------
+def _try_opencv_verify(
+    screenshot_path: str,
+    img_x: int,
+    img_y: int,
+    target_pid: int,
+    patch_size: int = 80,
+    confidence: float = 0.75,
+) -> tuple[int, int] | None:
+    """
+    Cat 1 vung nho quanh toa do (img_x, img_y) tu screenshot goc,
+    roi tim lai vung do tren man hinh hien tai.
+
+    Tra ve (screen_x, screen_y) neu tim thay, None neu khong.
+    Chi chay khi opencv-python da cai. Thoi gian: ~10-30ms.
+    """
+    try:
+        import cv2
+        import numpy as np
+        import mss
+    except ImportError:
+        return None
+
+    try:
+        # Doc screenshot goc
+        old_img = cv2.imread(screenshot_path)
+        if old_img is None:
+            return None
+        h, w = old_img.shape[:2]
+
+        # Cat patch quanh toa do
+        half = patch_size // 2
+        x1 = max(0, img_x - half)
+        y1 = max(0, img_y - half)
+        x2 = min(w, img_x + half)
+        y2 = min(h, img_y + half)
+        template = old_img[y1:y2, x1:x2]
+        if template.size == 0:
+            return None
+
+        # Chup man hinh hien tai (chi vung cua so)
+        from core.window_manager import get_window_rect_by_pid
+        win_rect = get_window_rect_by_pid(target_pid)
+        if not win_rect:
+            return None
+
+        with mss.mss() as sct:
+            monitor = {
+                "left": win_rect[0],
+                "top": win_rect[1],
+                "width": win_rect[2],
+                "height": win_rect[3],
+            }
+            current = np.array(sct.grab(monitor))[:, :, :3]  # BGRA -> BGR
+
+        # Template matching
+        result = cv2.matchTemplate(current, template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+        if max_val >= confidence:
+            # max_loc la top-left cua match, chuyen sang center
+            match_cx = max_loc[0] + (x2 - x1) // 2
+            match_cy = max_loc[1] + (y2 - y1) // 2
+
+            # Chuyen sang screen coords
+            screen_x = win_rect[0] + match_cx
+            screen_y = win_rect[1] + match_cy
+            logger.info(f"    -> OpenCV match: confidence={max_val:.2f}, screen({screen_x},{screen_y})")
+            return (screen_x, screen_y)
+        else:
+            logger.info(f"    -> OpenCV: no match (best={max_val:.2f} < {confidence})")
+            return None
+
+    except Exception as e:
+        logger.warning(f"    -> OpenCV verify skipped: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Thuc thi kich ban
 # ---------------------------------------------------------------------------
 def execute_plan(
@@ -200,6 +281,7 @@ def execute_plan(
     element_tree=None,
     recording_start_time: float = None,
     screenshot_callback = None,
+    cancel_event: threading.Event = None,
 ) -> ExecutionTrace:
     """
     Thuc thi kich ban hanh dong voi mouse + keyboard + execution trace.
@@ -247,6 +329,12 @@ def execute_plan(
     trace.start(recording_start_time)
 
     for i, action in enumerate(plan):
+        # Cancel check
+        if cancel_event and cancel_event.is_set():
+            logger.info(f"Execution cancelled at step {i}")
+            trace.log_step(i, "cancelled", "Execution cancelled by user")
+            break
+
         # Timeout check
         if time.time() - start_time > timeout_seconds:
             logger.error(f"TIMEOUT after {timeout_seconds}s")
@@ -494,16 +582,37 @@ def execute_plan(
             else:
                 trace.log_step(i, "moveTo", f"NOT FOUND: {elem_name}", step_start_ms)
 
-        # --- MOUSE CLICK (toa do cu the) ---
+        # --- MOUSE CLICK (window-relative coords) ---
         elif action_type == "mouse_click":
-            x = action.get("x", 0)
-            y = action.get("y", 0)
+            img_x = action.get("x", 0)
+            img_y = action.get("y", 0)
+            is_relative = action.get("is_window_relative", True)
+
             if not dry_run:
-                pyautogui.moveTo(x, y, duration=mouse_duration)
+                screen_x, screen_y = img_x, img_y
+
+                if is_relative:
+                    # Tier 1: Cong window offset hien tai
+                    from core.window_manager import get_window_rect_by_pid
+                    win_rect = get_window_rect_by_pid(target_pid)
+                    if win_rect:
+                        screen_x = win_rect[0] + img_x
+                        screen_y = win_rect[1] + img_y
+                        logger.info(f"    -> Window-relative: img({img_x},{img_y}) + win({win_rect[0]},{win_rect[1]}) = screen({screen_x},{screen_y})")
+
+                    # Tier 2 (fallback): OpenCV template matching
+                    # Cat vung nho tu screenshot goc, tim lai tren man hinh hien tai
+                    ss_path = action.get("screenshot_path")
+                    if ss_path:
+                        verified = _try_opencv_verify(ss_path, img_x, img_y, target_pid)
+                        if verified:
+                            screen_x, screen_y = verified
+
+                pyautogui.moveTo(screen_x, screen_y, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
                 time.sleep(0.1)
-                pyautogui.click(x, y)
+                pyautogui.click(screen_x, screen_y)
                 time.sleep(0.3)
-            trace.log_step(i, "click", f"click @({x},{y})", step_start_ms)
+            trace.log_step(i, "click", f"click img({img_x},{img_y}) -> screen({screen_x},{screen_y})" if not dry_run else f"click @({img_x},{img_y})", step_start_ms)
 
         # --- MOUSE MOVE (toa do cu the) ---
         elif action_type == "mouse_move":
@@ -524,37 +633,42 @@ def execute_plan(
             
             if not dry_run:
                 cx, cy = None, None
+                # Chi dung ghost cursor khi co target_value cu the (UIA selector)
+                # Khong dung khi flow keyboard-only (Tab/Enter de navigate giua fields)
+                # vi click ghost cursor vao giua man hinh se mat focus khoi compose popup
                 if target_value and target_value != "Type text":
                     cx_cy = engine.get_coordinates(target_value, target_pid)
                     if cx_cy:
                         cx, cy = cx_cy
-                        
-                if cx is None or cy is None:
-                    # Fallback to center of the window
-                    try:
-                        from pywinauto import Application
-                        _app = Application(backend="uia").connect(process=target_pid)
-                        win = _app.top_window()
-                        # If a text edit control is prominent, try to get it
-                        edit_ctrl = win.child_window(control_type="Document")
-                        if not edit_ctrl.exists():
-                            edit_ctrl = win.child_window(control_type="Edit")
-                            
-                        if edit_ctrl.exists():
-                            rect = edit_ctrl.rectangle()
-                        else:
-                            rect = win.rectangle()
-                        cx = (rect.left + rect.right) // 2
-                        cy = (rect.top + rect.bottom) // 2
-                    except Exception as e:
-                        logger.warning(f"  -> Could not resolve fallback center: {e}")
+                    
+                    if cx is None or cy is None:
+                        # Fallback to center of the window
+                        try:
+                            from pywinauto import Application
+                            _app = Application(backend="uia").connect(process=target_pid)
+                            win = _app.top_window()
+                            # If a text edit control is prominent, try to get it
+                            edit_ctrl = win.child_window(control_type="Document")
+                            if not edit_ctrl.exists():
+                                edit_ctrl = win.child_window(control_type="Edit")
+                                
+                            if edit_ctrl.exists():
+                                rect = edit_ctrl.rectangle()
+                            else:
+                                rect = win.rectangle()
+                            cx = (rect.left + rect.right) // 2
+                            cy = (rect.top + rect.bottom) // 2
+                        except Exception as e:
+                            logger.warning(f"  -> Could not resolve fallback center: {e}")
 
-                if cx is not None and cy is not None:
-                    pyautogui.moveTo(cx, cy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
-                    time.sleep(0.1)
-                    pyautogui.click(cx, cy)
-                    time.sleep(0.2)
-                    logger.info(f"  -> Cosmetic ghost cursor move/click @({cx},{cy}) before injection.")
+                    if cx is not None and cy is not None:
+                        pyautogui.moveTo(cx, cy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
+                        time.sleep(0.1)
+                        pyautogui.click(cx, cy)
+                        time.sleep(0.2)
+                        logger.info(f"  -> Cosmetic ghost cursor move/click @({cx},{cy}) before injection.")
+                else:
+                    logger.info(f"  -> Skipping ghost cursor (keyboard-only flow, focus already set)")
             
             # Universal Injection
             if target_value and target_value != "Type text" and not dry_run:
@@ -563,19 +677,35 @@ def execute_plan(
                     continue
 
             if not dry_run:
-                logger.info(f"  -> PyWinAuto Type: {text[:40]}...")
-                try:
-                    from pywinauto import Application
-                    _app = Application(backend="uia").connect(process=target_pid)
-                    win = _app.top_window()
-                    # type_keys hỗ trợ Unicode, có hiệu ứng gõ từng phím và tự động bypass Telex
-                    win.type_keys(text, with_spaces=True, pause=char_delay)
-                    time.sleep(0.5)
-                except Exception as e:
-                    logger.warning(f"  -> pywinauto type_keys failed: {e}")
-                    import pyperclip
-                    pyperclip.copy(text)
-                    pyautogui.hotkey('ctrl', 'v')
+                if not target_value or target_value == "Type text":
+                    # Browser/keyboard-only flow: go truc tiep vao element dang focus
+                    # Khong dung pywinauto type_keys vi no go vao top_window
+                    is_ascii = all(ord(c) < 128 for c in text)
+                    if is_ascii:
+                        # ASCII (URL, email): pyautogui.write() go tung ky tu, tu nhien
+                        logger.info(f"  -> Natural typing (ASCII): {text[:40]}...")
+                        pyautogui.write(text, interval=char_delay)
+                        time.sleep(0.3)
+                    else:
+                        # Unicode (tieng Viet): clipboard paste vi pyautogui khong ho tro
+                        logger.info(f"  -> Clipboard paste (Unicode): {text[:40]}...")
+                        import pyperclip
+                        pyperclip.copy(text)
+                        pyautogui.hotkey('ctrl', 'v')
+                        time.sleep(0.3)
+                else:
+                    logger.info(f"  -> PyWinAuto Type: {text[:40]}...")
+                    try:
+                        from pywinauto import Application
+                        _app = Application(backend="uia").connect(process=target_pid)
+                        win = _app.top_window()
+                        win.type_keys(text, with_spaces=True, pause=char_delay)
+                        time.sleep(0.5)
+                    except Exception as e:
+                        logger.warning(f"  -> pywinauto type_keys failed: {e}")
+                        import pyperclip
+                        pyperclip.copy(text)
+                        pyautogui.hotkey('ctrl', 'v')
             trace.log_step(i, "type", f"type \"{text[:40]}\"", step_start_ms)
 
         # --- SCROLL ---

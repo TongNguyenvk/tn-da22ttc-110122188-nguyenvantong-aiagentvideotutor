@@ -14,6 +14,7 @@ Trace output tuong thich 100% voi trace_composer.py de ghep audio sau.
 
 import time
 import logging
+import threading
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -90,6 +91,7 @@ def record_with_script(
     mouse_duration: float = 0.5,
     framerate: int = 30,
     screenshot_callback = None,
+    cancel_event: threading.Event = None,
 ) -> dict:
     """
     Quay video dong bo voi thuc thi kich ban.
@@ -189,6 +191,7 @@ def record_with_script(
             element_tree=element_tree,
             recording_start_time=recording_start_time,
             screenshot_callback=screenshot_callback,
+            cancel_event=cancel_event,
         )
     except Exception as e:
         logger.error(f"Execution error: {e}")
@@ -196,6 +199,18 @@ def record_with_script(
         if ffmpeg_process:
             stop_recording(ffmpeg_process)
         raise
+
+    # Check if cancelled during execution
+    if cancel_event and cancel_event.is_set():
+        logger.info("Recording cancelled, stopping FFmpeg...")
+        if ffmpeg_process:
+            stop_recording(ffmpeg_process)
+        return {
+            "video_path": None,
+            "trace_path": None,
+            "trace": trace,
+            "cancelled": True,
+        }
 
     # Buoc 5: Dung quay
     if ffmpeg_process:

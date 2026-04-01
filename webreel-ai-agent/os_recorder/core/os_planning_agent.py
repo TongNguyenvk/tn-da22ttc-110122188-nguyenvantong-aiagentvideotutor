@@ -916,6 +916,7 @@ def replay_plan_with_recording(
     video_name: str = "replay_video",
     framerate: int = 30,
     screenshot_callback = None,
+    cancel_event = None,
 ) -> dict:
     """
     Fix #3: Doc plan.json va dien lai muot ma + quay FFmpeg.
@@ -926,6 +927,7 @@ def replay_plan_with_recording(
     
     Args:
         screenshot_callback: Optional callback(step_index, step_data) duoc goi sau moi action
+        cancel_event: Optional threading.Event; if set, recording will be interrupted.
     """
     from core.sync_recorder import record_with_script
 
@@ -949,6 +951,8 @@ def replay_plan_with_recording(
         timeout_seconds=None,  # Auto-calculate from plan duration
         framerate=framerate,
         screenshot_callback=screenshot_callback,
+        cancel_event=cancel_event,
     )
 
     return result
+

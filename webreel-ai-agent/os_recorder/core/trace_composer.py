@@ -244,6 +244,7 @@ def compose_video_from_trace(
     trace_path: str | Path,
     audio_files: list[str | Path],
     output_path: str | Path,
+    cancel_event=None,
 ) -> Path:
     """
     Compose final video by placing audio at trace-derived timestamps.
@@ -260,6 +261,11 @@ def compose_video_from_trace(
     print(f"[TraceComposer] Loading trace: {trace_path}")
     trace = load_execution_trace(trace_path)
     print(f"[TraceComposer] Trace has {len(trace)} steps")
+
+    # Check cancellation before heavy work
+    if cancel_event and cancel_event.is_set():
+        print("[TraceComposer] Cancelled before processing")
+        return video_path
 
     # Process audio files, preserving None for failed segments
     processed_audio: list[Path | None] = []
@@ -324,7 +330,7 @@ def compose_video_from_trace(
     filter_parts.append(
         f"{mix_labels}amix=inputs={num_inputs}:duration=longest:dropout_transition=0:normalize=0,volume=1.5[amixed]"
     )
-    # Dùng apad kéo dài audio đến vô tận để khớp với video length
+    # apad extends audio to infinity to match video length
     filter_parts.append("[amixed]apad[aout]")
 
     filter_complex = ";".join(filter_parts)
@@ -336,24 +342,38 @@ def compose_video_from_trace(
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", "192k",
-        "-shortest",  # Cắt audio vô tận ở ngay điểm video gốc kết thúc
+        "-shortest",
         str(output_path),
     ])
 
     print(f"\n[TraceComposer] Running ffmpeg...")
     print(f"[TraceComposer] Command: {' '.join(cmd)}")
     print(f"[TraceComposer] Filter complex: {filter_complex}")
-    result = subprocess.run(
+
+    # Use Popen + poll so we can kill FFmpeg when cancelled
+    import time
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
-    if result.returncode != 0:
-        print(f"[TraceComposer] ffmpeg stderr:\n{result.stderr}")
-        raise RuntimeError(f"ffmpeg failed: {result.returncode}")
+    # Poll loop: check cancel_event while FFmpeg runs
+    while proc.poll() is None:
+        if cancel_event and cancel_event.is_set():
+            print("[TraceComposer] Cancel requested, killing ffmpeg...")
+            proc.kill()
+            proc.wait(timeout=5)
+            print("[TraceComposer] FFmpeg killed")
+            return video_path
+        time.sleep(0.3)
+
+    stdout_data = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
+    stderr_data = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+
+    if proc.returncode != 0:
+        print(f"[TraceComposer] ffmpeg stderr:\n{stderr_data}")
+        raise RuntimeError(f"ffmpeg failed: {proc.returncode}")
 
     print(f"[TraceComposer] Done: {output_path}")
     return output_path

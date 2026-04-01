@@ -87,24 +87,27 @@ def main(page: ft.Page):
             for project_dir in output_base.iterdir():
                 if not project_dir.is_dir():
                     continue
-                for video_file in project_dir.glob("*_final.mp4"):
-                    videos.append({
-                        "name": project_dir.name,
-                        "path": str(video_file),
-                        "size": video_file.stat().st_size,
-                        "created": video_file.stat().st_mtime,
-                        "source": "web",
-                    })
-                if not list(project_dir.glob("*_final.mp4")):
-                    for video_file in project_dir.glob("*.mp4"):
-                        if "_raw" not in video_file.stem:
-                            videos.append({
-                                "name": project_dir.name,
-                                "path": str(video_file),
-                                "size": video_file.stat().st_size,
-                                "created": video_file.stat().st_mtime,
-                                "source": "web",
-                            })
+                try:
+                    for video_file in project_dir.glob("*_final.mp4"):
+                        videos.append({
+                            "name": project_dir.name,
+                            "path": str(video_file),
+                            "size": video_file.stat().st_size,
+                            "created": video_file.stat().st_mtime,
+                            "source": "web",
+                        })
+                    if not list(project_dir.glob("*_final.mp4")):
+                        for video_file in project_dir.glob("*.mp4"):
+                            if "_raw" not in video_file.stem:
+                                videos.append({
+                                    "name": project_dir.name,
+                                    "path": str(video_file),
+                                    "size": video_file.stat().st_size,
+                                    "created": video_file.stat().st_mtime,
+                                    "source": "web",
+                                })
+                except Exception as ex:
+                    logger.warning(f"Error reading history for {project_dir}: {ex}")
 
         # Scan os_recorder/workspace/output (new structure)
         os_output = OS_RECORDER_DIR / "workspace" / "output"
@@ -113,39 +116,51 @@ def main(page: ft.Page):
                 if not project_dir.is_dir():
                     continue
                 
-                # Look for final video
-                video_file = project_dir / f"{project_dir.name}_final.mp4"
-                if not video_file.exists():
-                    # Fallback: any mp4 file
-                    mp4_files = list(project_dir.glob("*.mp4"))
-                    if mp4_files:
-                        video_file = mp4_files[0]
-                    else:
-                        continue
-                
-                video_entry = {
-                    "name": project_dir.name,
-                    "path": str(video_file),
-                    "size": video_file.stat().st_size,
-                    "created": video_file.stat().st_mtime,
-                    "source": "desktop",
-                }
-                
-                # Check for DOCX and PDF
-                docx_file = project_dir / f"{project_dir.name}.docx"
-                pdf_file = project_dir / f"{project_dir.name}.pdf"
-                
-                if docx_file.exists():
-                    video_entry["docx_path"] = str(docx_file)
-                if pdf_file.exists():
-                    video_entry["pdf_path"] = str(pdf_file)
-                
-                videos.append(video_entry)
+                try:
+                    # Look for final video
+                    video_file = project_dir / f"{project_dir.name}_final.mp4"
+                    if not video_file.exists():
+                        # Fallback: any mp4 file
+                        mp4_files = list(project_dir.glob("*.mp4"))
+                        if mp4_files:
+                            video_file = mp4_files[0]
+                        else:
+                            continue
+                    
+                    video_entry = {
+                        "name": project_dir.name,
+                        "path": str(video_file),
+                        "size": video_file.stat().st_size,
+                        "created": video_file.stat().st_mtime,
+                        "source": "desktop",
+                    }
+                    
+                    # Check for DOCX and PDF
+                    docx_file = project_dir / f"{project_dir.name}.docx"
+                    pdf_file = project_dir / f"{project_dir.name}.pdf"
+                    
+                    if docx_file.exists():
+                        video_entry["docx_path"] = str(docx_file)
+                    if pdf_file.exists():
+                        video_entry["pdf_path"] = str(pdf_file)
+                    
+                    videos.append(video_entry)
+                except Exception as ex:
+                    logger.warning(f"Error reading history for desktop {project_dir}: {ex}")
 
         videos.sort(key=lambda x: x["created"], reverse=True)
         return videos
 
     def open_video_file(video_path: str):
+        if not os.path.exists(video_path):
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Lỗi: File hoặc thư mục {video_path} không tồn tại hoặc đã bị xóa.", color=ft.Colors.WHITE),
+                bgcolor=ft.Colors.RED_600,
+            )
+            page.snack_bar.open = True
+            page.update()
+            return
+            
         try:
             if platform.system() == "Windows":
                 os.startfile(video_path)
@@ -209,9 +224,26 @@ def main(page: ft.Page):
     )
 
     # ---- Desktop-specific: Target App ----
-    target_app_section_label = ft.Text("Ứng dụng mục tiêu", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_800)
+    target_app_section_label = ft.Text("Ung dung muc tieu", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_800)
+
+    # Custom process name input (visible only when "custom" is selected)
+    custom_app_name_input = ft.TextField(
+        label="Ten process (VD: photoshop.exe)",
+        hint_text="ten_process.exe",
+        visible=False,
+        bgcolor=ft.Colors.WHITE,
+        border_color=ft.Colors.BLUE_200,
+        focused_border_color=ft.Colors.BLUE_600,
+        border_radius=8,
+        text_size=13,
+    )
+
+    def on_target_app_change(e):
+        custom_app_name_input.visible = (target_app_dropdown.value == "custom")
+        page.update()
+
     target_app_dropdown = ft.Dropdown(
-        label="Ứng dụng",
+        label="Ung dung",
         value="excel",
         expand=True,
         bgcolor=ft.Colors.WHITE,
@@ -219,27 +251,33 @@ def main(page: ft.Page):
         focused_border_color=ft.Colors.BLUE_600,
         border_radius=8,
         text_size=13,
+        on_select=on_target_app_change,
         options=[
             ft.dropdown.Option("excel", "Microsoft Excel"),
             ft.dropdown.Option("word", "Microsoft Word"),
             ft.dropdown.Option("ppt", "Microsoft PowerPoint"),
             ft.dropdown.Option("notepad", "Notepad"),
+            ft.dropdown.Option("chrome", "Google Chrome"),
+            ft.dropdown.Option("edge", "Microsoft Edge"),
+            ft.dropdown.Option("firefox", "Mozilla Firefox"),
+            ft.dropdown.Option("custom", "Khac (nhap ten process)"),
         ],
     )
-    
+
     # Dual output checkbox for Desktop mode
     enable_dual_output_checkbox = ft.Checkbox(
-        label="Tạo tài liệu DOCX + PDF",
+        label="Tao tai lieu DOCX + PDF",
         value=True,
         fill_color=ft.Colors.BLUE_600,
-        tooltip="Tự động tạo tài liệu hướng dẫn (DOCX) và PDF kèm video",
+        tooltip="Tu dong tao tai lieu huong dan (DOCX) va PDF kem video",
     )
-    
+
     desktop_section = ft.Container(
         content=ft.Column([
-            target_app_section_label, 
+            target_app_section_label,
             target_app_dropdown,
-            enable_dual_output_checkbox
+            custom_app_name_input,
+            enable_dual_output_checkbox,
         ], spacing=10),
         visible=False,
     )
@@ -367,10 +405,17 @@ def main(page: ft.Page):
                 # Environment badge
                 if job_env == "desktop":
                     target_app = job_data.get("target_app", "")
-                    app_label = {"excel": "Excel", "word": "Word", "ppt": "PowerPoint", "notepad": "Notepad"}.get(target_app, target_app)
+                    app_label_map = {
+                        "excel": "Excel", "word": "Word", "ppt": "PowerPoint",
+                        "notepad": "Notepad", "chrome": "Chrome",
+                        "edge": "Edge", "firefox": "Firefox",
+                    }
+                    app_label = app_label_map.get(target_app, target_app)
+                    is_browser = target_app in ("chrome", "edge", "firefox")
+                    badge_bg = ft.Colors.ORANGE_700 if is_browser else ft.Colors.TEAL_700
                     env_indicator = ft.Container(
                         content=ft.Text(f"Desktop: {app_label}", size=10, color=ft.Colors.WHITE),
-                        bgcolor=ft.Colors.TEAL_700,
+                        bgcolor=badge_bg,
                         padding=ft.Padding(left=6, right=6, top=3, bottom=3),
                         border_radius=10,
                     )
@@ -469,22 +514,47 @@ def main(page: ft.Page):
             os_ready_events[job_id].set()
             logger.info(f"  - OS ready event unblocked for job #{job_id}")
 
-        # Step 5: Kill any child processes (FFmpeg, Webreel, Chrome)
+        # Step 5: Kill ALL child subprocess trees (FFmpeg, Webreel node, etc.)
+        # Instead of relying on child_pids (never populated), we find and kill
+        # all child processes of the current Python process using psutil.
         try:
             import psutil
-            if "child_pids" in job_data:
-                for pid in job_data["child_pids"]:
-                    try:
-                        process = psutil.Process(pid)
-                        process.terminate()
-                        logger.info(f"  - Terminated child process PID={pid}")
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+            # Collect process names/executables to kill (spawned by pipeline)
+            kill_targets = {"ffmpeg", "ffprobe", "node", "chrome-headless-shell"}
+            current_process = psutil.Process(os.getpid())
+            children = current_process.children(recursive=True)
+            killed_count = 0
+            for child in children:
+                try:
+                    child_name = child.name().lower()
+                    # Kill FFmpeg, node (webreel), chrome-headless-shell
+                    # Skip flet/python processes to keep the app running
+                    if any(target in child_name for target in kill_targets):
+                        child.kill()
+                        killed_count += 1
+                        logger.info(f"  - Killed subprocess PID={child.pid} ({child.name()})")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            if killed_count > 0:
+                logger.info(f"  - Total killed: {killed_count} child processes")
+            else:
+                logger.info(f"  - No killable child processes found (checked {len(children)} children)")
         except ImportError:
-            logger.warning("  - psutil not available, cannot kill child processes")
+            # Fallback: use taskkill on Windows to kill known process names
+            logger.warning("  - psutil not available, using taskkill fallback")
+            if platform.system() == "Windows":
+                for proc_name in ["ffmpeg.exe", "ffprobe.exe"]:
+                    try:
+                        subprocess.run(
+                            f"taskkill /F /IM {proc_name}",
+                            shell=True, capture_output=True, timeout=5,
+                        )
+                        logger.info(f"  - taskkill sent for {proc_name}")
+                    except Exception:
+                        pass
 
         # Step 6: Update UI immediately
-        job_data["status"] = "Đã hủy"
+        job_data["status"] = "Da huy"
         job_data["progress"] = 0
         job_data["cancelled"] = True
         update_jobs_display()
@@ -526,17 +596,22 @@ def main(page: ft.Page):
             
             def on_confirm_delete(e):
                 logger.info(f"Confirm delete clicked for: {video_name}")
+                if hasattr(overlay_dialog, 'actions') and overlay_dialog.actions:
+                    for action in overlay_dialog.actions:
+                        action.disabled = True
+                    page.update()
+                    
                 try:
                     # Delete entire folder
                     shutil.rmtree(folder_path)
                     logger.info(f"Deleted folder: {folder_path}")
                     
-                    # Close dialog by setting open=False first
-                    overlay_dialog.open = False
-                    page.update()
-                    
-                    # Then clear overlay
-                    page.overlay.clear()
+                    # Close dialog
+                    if hasattr(page, 'close'):
+                        page.close(overlay_dialog)
+                    else:
+                        overlay_dialog.open = False
+                        page.update()
                     
                     # Refresh history
                     load_history_tab()
@@ -556,11 +631,13 @@ def main(page: ft.Page):
                     
                     # Close dialog on error
                     try:
-                        overlay_dialog.open = False
-                        page.update()
+                        if hasattr(page, 'close'):
+                            page.close(overlay_dialog)
+                        else:
+                            overlay_dialog.open = False
+                            page.update()
                     except:
                         pass
-                    page.overlay.clear()
                     
                     # Show error message
                     page.snack_bar = ft.SnackBar(
@@ -572,10 +649,11 @@ def main(page: ft.Page):
             
             def on_cancel_delete(e):
                 logger.info(f"Delete cancelled for: {video_name}")
-                overlay_dialog.open = False
-                page.update()
-                page.overlay.clear()
-                page.update()
+                if hasattr(page, 'close'):
+                    page.close(overlay_dialog)
+                else:
+                    overlay_dialog.open = False
+                    page.update()
             
             # Build confirmation dialog using overlay
             overlay_dialog = ft.AlertDialog(
@@ -638,8 +716,11 @@ def main(page: ft.Page):
                 open=True,
             )
             
-            page.overlay.append(overlay_dialog)
-            page.update()
+            if hasattr(page, 'open'):
+                page.open(overlay_dialog)
+            else:
+                page.overlay.append(overlay_dialog)
+                page.update()
             
         except Exception as ex:
             logger.error(f"Error in show_delete_confirmation_dialog: {ex}")
@@ -872,6 +953,15 @@ def main(page: ft.Page):
                 text = ctrl["text_field"].value.strip()
                 if text:
                     edited_script.append({"text": text, "narration_index": ctrl["index"], "index": ctrl["index"]})
+                    
+            if not edited_script:
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Kịch bản thuyết minh không được để trống! Vui lòng nhập nội dung hoặc bấm Hủy bỏ.", color=ft.Colors.WHITE),
+                    bgcolor=ft.Colors.ORANGE_600,
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
 
             if mode == "web":
                 if job_id in running_jobs:
@@ -1421,26 +1511,82 @@ def main(page: ft.Page):
             from core.window_manager import get_visible_windows
             windows = get_visible_windows()
 
+            # IDE/editor exclusion filter
+            _ide_excl = lambda t: not any(x in t for x in ["visual studio code", "cursor", "kiro", ".py"])
+
             app_map = {
-                "excel": {"filter": lambda t: ("excel" in t or "book" in t) and "visual studio code" not in t and ".py" not in t, "exe": "excel.exe", "start_cmd": "start excel"},
-                "word": {"filter": lambda t: ("word" in t or "document" in t) and "visual studio code" not in t and ".py" not in t, "exe": "winword.exe", "start_cmd": "start winword"},
-                "ppt": {"filter": lambda t: ("powerpoint" in t or "presentation" in t) and "visual studio code" not in t and ".py" not in t, "exe": "powerpnt.exe", "start_cmd": "start powerpnt"},
-                "notepad": {"filter": lambda t: "notepad" in t, "exe": "notepad.exe", "start_cmd": "notepad"},
+                "excel": {
+                    "filter": lambda t: ("excel" in t or "book" in t) and _ide_excl(t),
+                    "exe": "excel.exe",
+                    "start_cmd": "start excel",
+                },
+                "word": {
+                    "filter": lambda t: ("word" in t or "document" in t) and _ide_excl(t),
+                    "exe": "winword.exe",
+                    "start_cmd": "start winword",
+                },
+                "ppt": {
+                    "filter": lambda t: ("powerpoint" in t or "presentation" in t) and _ide_excl(t),
+                    "exe": "powerpnt.exe",
+                    "start_cmd": "start powerpnt",
+                },
+                "notepad": {
+                    "filter": lambda t: "notepad" in t and _ide_excl(t),
+                    "exe": "notepad.exe",
+                    "start_cmd": "notepad",
+                },
+                "chrome": {
+                    "filter": lambda t: "google chrome" in t or ("chrome" in t and "edge" not in t),
+                    "exe": "chrome.exe",
+                    "start_cmd": 'start chrome "about:blank"',
+                },
+                "edge": {
+                    "filter": lambda t: "edge" in t or "msedge" in t,
+                    "exe": "msedge.exe",
+                    "start_cmd": 'start msedge "about:blank"',
+                },
+                "firefox": {
+                    "filter": lambda t: "firefox" in t or "mozilla" in t,
+                    "exe": "firefox.exe",
+                    "start_cmd": 'start firefox "about:blank"',
+                },
             }
 
-            app_info = app_map.get(target_app, app_map["notepad"])
-            app_win = next((w for w in windows if app_info["filter"](w["title"].lower())), None)
+            # Handle custom process name
+            if target_app == "custom":
+                custom_name = custom_app_name_input.value.strip() if custom_app_name_input.value else ""
+                if not custom_name:
+                    raise Exception("Vui long nhap ten process cho ung dung tuy chinh")
+                # Normalize: add .exe if missing
+                if not custom_name.lower().endswith(".exe"):
+                    custom_name += ".exe"
+                base_name = custom_name.replace(".exe", "").lower()
+                app_info = {
+                    "filter": lambda t, bn=base_name: bn in t,
+                    "exe": custom_name,
+                    "start_cmd": f"start {custom_name}",
+                }
+            else:
+                app_info = app_map.get(target_app, app_map["notepad"])
+
+            app_win = next(
+                (w for w in windows if app_info["filter"](w["title"].lower())),
+                None,
+            )
 
             if not app_win:
-                running_jobs[job_id]["status"] = f"Đang khởi động {target_app}..."
+                running_jobs[job_id]["status"] = f"Dang khoi dong {target_app}..."
                 update_jobs_display()
                 subprocess.Popen(app_info["start_cmd"], shell=True)
                 await asyncio.sleep(4)
                 windows = get_visible_windows()
-                app_win = next((w for w in windows if app_info["filter"](w["title"].lower())), None)
+                app_win = next(
+                    (w for w in windows if app_info["filter"](w["title"].lower())),
+                    None,
+                )
 
             if not app_win:
-                raise Exception(f"Không tìm thấy cửa sổ {target_app}")
+                raise Exception(f"Khong tim thay cua so {target_app}")
 
             pid = app_win["pid"]
             logger.info(f"Job #{job_id}: Found {target_app} PID={pid}")
@@ -1521,7 +1667,7 @@ def main(page: ft.Page):
                 output_dir=str(OS_RECORDER_DIR / "workspace" / "output"),
                 video_name=video_name,
                 voice=tts_voice if tts_voice else "banmai",
-                max_agent_steps=30,  # Tăng từ 15 lên 30 cho PowerPoint có nhiều slide
+                max_agent_steps=30,  # Tang tu 15 len 30 cho PowerPoint co nhieu slide
                 dry_run=False,
                 skip_tts=not enable_tts,
                 app_executable=app_info["exe"],
@@ -1532,6 +1678,21 @@ def main(page: ft.Page):
                 ready_event=os_ready_events.get(job_id),
                 enable_dual_output=enable_dual,
             )
+
+            # Check if cancelled during pipeline execution
+            # asyncio.to_thread does NOT raise CancelledError when the thread
+            # finishes naturally, so we must check explicitly
+            if cancel_event.is_set():
+                logger.info(f"Job #{job_id} (Desktop) was cancelled during pipeline")
+                if job_id in running_jobs:
+                    running_jobs[job_id]["status"] = "Da huy"
+                    running_jobs[job_id]["progress"] = 0
+                    update_jobs_display()
+                    await asyncio.sleep(1.5)
+                    if job_id in running_jobs:
+                        del running_jobs[job_id]
+                        update_jobs_display()
+                return
 
             # Check result
             video_path = pipeline_result.get("video_final_path") or pipeline_result.get("video_raw_path")
@@ -1612,8 +1773,8 @@ def main(page: ft.Page):
     async def start_pipeline_click(e):
         nonlocal job_counter
 
-        task = task_input.value
-        video_name = video_name_input.value
+        task = task_input.value.strip() if task_input.value else ""
+        video_name = video_name_input.value.strip() if video_name_input.value else ""
         env = env_dropdown.value
 
         if not task or not video_name:
@@ -1624,6 +1785,21 @@ def main(page: ft.Page):
             page.snack_bar.open = True
             page.update()
             return
+            
+        import re
+        invalid_chars = r'[\\/:*?"<>|]'
+        if re.search(invalid_chars, video_name):
+            video_name = re.sub(invalid_chars, '_', video_name)
+            video_name_input.value = video_name
+            page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Tên video đã chứa ký tự không hợp lệ và được tự động đổi thành: {video_name}", color=ft.Colors.WHITE),
+                bgcolor=ft.Colors.ORANGE_600,
+            )
+            page.snack_bar.open = True
+            page.update()
+
+        run_button.disabled = True
+        page.update()
 
         job_counter += 1
         job_id = job_counter
@@ -1659,6 +1835,10 @@ def main(page: ft.Page):
             bgcolor=ft.Colors.GREEN_600,
         )
         page.snack_bar.open = True
+        page.update()
+        
+        await asyncio.sleep(1)
+        run_button.disabled = False
         page.update()
 
     run_button = ft.FilledButton(

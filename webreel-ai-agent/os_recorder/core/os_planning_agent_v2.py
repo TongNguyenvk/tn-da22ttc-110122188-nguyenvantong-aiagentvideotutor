@@ -237,15 +237,137 @@ EXAMPLE NARRATIONS (GOOD):
 - "Phân tích cạnh tranh cho thấy thị trường hiện tại có nhiều cơ hội phát triển. Các doanh nghiệp cần tập trung vào điểm mạnh của mình để tạo ra lợi thế cạnh tranh bền vững."
 
 EXAMPLE NARRATIONS (BAD - DO NOT DO THIS):
-- "Tôi sẽ nhấn phím F5 để bắt đầu trình chiếu." ❌
-- "Chúng ta chuyển sang slide tiếp theo bằng phím mũi tên phải." ❌
-- "Tiếp tục bài giảng, sử dụng phím tắt để di chuyển." ❌
+- "Tôi sẽ nhấn phím F5 để bắt đầu trình chiếu." (WRONG)
+- "Chúng ta chuyển sang slide tiếp theo bằng phím mũi tên phải." (WRONG)
+- "Tiếp tục bài giảng, sử dụng phím tắt để di chuyển." (WRONG)
 
 POWERPOINT NAVIGATION KEYS:
 - `["f5"]`: Start Slide Show from beginning
 - `["right"]`, `["space"]`, `["pagedown"]`: Next Slide
 - `["escape"]`: End Slide Show
 """
+
+# Browser-specific prompt (OS-level control, no UIA for web content)
+BROWSER_PROMPT = """You are an OS Automation Agent controlling a web browser (Chrome/Edge/Firefox) using OS-level input.
+
+CRITICAL LIMITATION:
+- You CANNOT see or click individual web page elements via the UI element list. The browser only exposes its toolbar (address bar, tabs) to the OS, NOT the web page content.
+- You CAN see everything in the SCREENSHOT. Use the screenshot to identify clickable areas visually.
+- For web page interactions, you MUST use "mouse_click" with (x, y) coordinates from the screenshot.
+
+COORDINATE GRID:
+The screenshot has a RED COORDINATE GRID overlay with labeled axes. USE these grid labels to estimate accurate coordinates:
+- Vertical red lines are labeled with X values (200, 400, 600, 800, ...)
+- Horizontal red lines are labeled with Y values (200, 400, 600, 800, ...)
+- To find coordinates of a target element, look at which grid lines are NEAREST to it and interpolate.
+- Example: If a button is halfway between x=1400 and x=1600 lines, and just below y=800 line, its coordinates are approximately (1500, 820).
+
+AVAILABLE ACTIONS:
+- mouse_click: Click at specific screen coordinates. Use "x" and "y" fields (integers). Use this for ALL web page elements.
+- type_text: Type text into the focused element. Use "text" field.
+- press_key: Press a key. Use "key" field. Allowed: a-z, 0-9, space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end.
+- press_hotkey: Press key combination. Use "keys" array field. Allowed modifiers: shift, ctrl, alt.
+- scroll: Scroll mouse wheel. Use "amount" field (positive=up, negative=down).
+- wait: Wait for page load. Use "duration_ms" field.
+- done: Task is complete.
+
+RESPONSE FORMAT (JSON only):
+{
+  "thought": "I see the Compose button near x=60, between y=200 and y=400 grid lines, approximately at y=260",
+  "action": {
+    "action_type": "mouse_click",
+    "x": 60,
+    "y": 260
+  },
+  "narration": "Vietnamese narration (2-3 sentences, WITH DIACRITICS)",
+  "is_done": false
+}
+
+BROWSER TIPS (MUST follow):
+- To focus the ADDRESS BAR: Use press_hotkey ["ctrl", "l"]. NEVER click on the address bar directly.
+- To type a URL: First press_hotkey ["ctrl", "l"], then type_text with the URL, then press_key "enter".
+- Tab key can cycle focus between input fields on a web page.
+
+EMAIL COMPOSE WORKFLOW (Gmail/Outlook):
+- When a compose popup opens, the "To" field is ALREADY FOCUSED. Just use type_text directly.
+- After typing the recipient email, press Enter FIRST to CONFIRM the autocomplete suggestion. This is critical: without Enter, the email is not confirmed.
+- After pressing Enter (confirm recipient), press Tab to move to the Subject field.
+- After Tab, the Subject field is focused. Use type_text directly WITHOUT clicking.
+- Complete field navigation sequence: type_text (recipient) -> press_key "enter" (confirm) -> press_key "tab" (move to Subject) -> type_text (subject) -> press_key "tab" (move to Body) -> type_text (body).
+- To send the email: press_hotkey ["ctrl", "enter"].
+- IMPORTANT: The compose popup appears at the BOTTOM-RIGHT corner of the browser. Its coordinates are at HIGH x values (x > 1200) and HIGH y values (y > 400). NEVER click at low x values (< 800) to interact with the compose popup.
+
+RULES:
+1. Return EXACTLY ONE action per response.
+2. For web page elements: ALWAYS use "mouse_click" with coordinates READ FROM THE GRID.
+3. In your "thought", ALWAYS mention the nearest grid lines to explain your coordinate choice.
+4. NEVER click directly on the browser address bar. Use press_hotkey ["ctrl", "l"] instead.
+5. When a field is ALREADY FOCUSED (after Tab or after opening compose), use type_text directly. DO NOT click first.
+6. Coordinates should be the CENTER of the target element.
+7. Write narrations in Vietnamese WITH FULL DIACRITICS.
+8. Set "is_done": true ONLY when the FULL task is 100% complete.
+9. If a page is loading, use "wait" with appropriate duration.
+10. NEVER use dangerous keys (delete, backspace, win).
+"""
+
+# ---------------------------------------------------------------------------
+# Coordinate Grid Overlay (giup model nhe uoc toa do chinh xac hon)
+# ---------------------------------------------------------------------------
+def _add_coordinate_grid(
+    image_path: str,
+    output_path: str,
+    grid_spacing: int = 200,
+) -> str:
+    """
+    Ve luoi toa do len screenshot de giup LLM uoc toa do chinh xac.
+    Luoi nhe, mau do nhat, khong che noi dung.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.open(image_path)
+        draw = ImageDraw.Draw(img, "RGBA")
+        w, h = img.size
+
+        # Mau do nhat ban trong
+        line_color = (255, 0, 0, 60)
+        text_color = (255, 0, 0, 180)
+        bg_color = (255, 255, 255, 140)
+
+        try:
+            font = ImageFont.truetype("arial.ttf", 14)
+        except Exception:
+            font = ImageFont.load_default()
+
+        # Ve duong doc + nhan x
+        for x in range(grid_spacing, w, grid_spacing):
+            draw.line([(x, 0), (x, h)], fill=line_color, width=1)
+            label = str(x)
+            bbox = font.getbbox(label)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            draw.rectangle([x + 2, 2, x + tw + 6, th + 6], fill=bg_color)
+            draw.text((x + 4, 2), label, fill=text_color, font=font)
+
+        # Ve duong ngang + nhan y
+        for y in range(grid_spacing, h, grid_spacing):
+            draw.line([(0, y), (w, y)], fill=line_color, width=1)
+            label = str(y)
+            bbox = font.getbbox(label)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            draw.rectangle([2, y + 2, tw + 6, y + th + 6], fill=bg_color)
+            draw.text((4, y + 2), label, fill=text_color, font=font)
+
+        # Them goc toa do (0,0)
+        draw.text((4, 2), "0,0", fill=text_color, font=font)
+
+        img.save(output_path)
+        return output_path
+    except Exception as e:
+        logger.warning(f"  Grid overlay failed: {e}, using original")
+        return image_path
+
 
 # ---------------------------------------------------------------------------
 # Agent step result
@@ -338,13 +460,19 @@ class OSPlanningAgent:
             from pywinauto import Application
             app = Application(backend="uia").connect(process=self.pid)
             window_title = app.top_window().window_text()
-            
+
             if "PowerPoint" in window_title or ".pptx" in window_title or ".ppt" in window_title:
                 return "powerpoint"
             elif "Word" in window_title or ".docx" in window_title or ".doc" in window_title:
                 return "word"
             elif "Excel" in window_title or ".xlsx" in window_title or ".xls" in window_title:
                 return "excel"
+            # Browser detection
+            elif any(b in window_title for b in [
+                "Chrome", "Google Chrome", "Edge", "Firefox", "Brave",
+                "Opera", "Vivaldi",
+            ]):
+                return "browser"
             else:
                 return "general"
         except Exception as e:
@@ -390,21 +518,35 @@ class OSPlanningAgent:
                 except Exception as e:
                     logger.warning(f"  Focus failed: {e}")
 
-            # 2. Chụp screenshot
+            # 2. Chup screenshot va lay window rect
             screenshot_path = str(self.output_dir / f"step_{step_idx:03d}.png")
+            from core.window_manager import get_window_rect_by_pid
+            win_rect = get_window_rect_by_pid(self.pid)  # (left, top, w, h)
             capture_window_by_pid(self.pid, screenshot_path)
-            logger.info(f"  Screenshot: {screenshot_path}")
+            img_w = win_rect[2] if win_rect else 1920
+            img_h = win_rect[3] if win_rect else 1080
+            logger.info(f"  Screenshot: {screenshot_path} ({img_w}x{img_h})")
 
-            # 3. Lấy element tree + prune + index
+            # 2.5 Tao ban sao co grid cho browser mode
+            gemini_screenshot = screenshot_path
+            if self.app_type == "browser":
+                gridded_path = str(self.output_dir / f"step_{step_idx:03d}_grid.png")
+                gemini_screenshot = _add_coordinate_grid(
+                    screenshot_path, gridded_path, grid_spacing=200
+                )
+                logger.info(f"  Grid overlay: {gemini_screenshot}")
+
+            # 3. Lay element tree + prune + index
             root = get_element_tree(self.pid, max_depth=4)
             indexed_elements = prune_and_index_tree(root)
             elements_text = format_elements_for_llm(indexed_elements)
             logger.info(f"  Elements: {len(indexed_elements)} interactive (pruned)")
 
-            # 4. Gọi Gemini (có retry, raise nếu thất bại hết)
+            # 4. Goi Gemini (co retry, raise neu that bai het)
             try:
                 agent_step = self._call_gemini(
-                    step_idx, screenshot_path, elements_text, indexed_elements
+                    step_idx, gemini_screenshot, elements_text, indexed_elements,
+                    image_size=(img_w, img_h),
                 )
             except RuntimeError as e:
                 gemini_error = e
@@ -680,6 +822,25 @@ class OSPlanningAgent:
             logger.info(f"  -> Wait: {dur}ms")
             time.sleep(dur / 1000.0)
 
+        elif action_type == "mouse_click":
+            # Toa do tu Gemini la window-relative (theo anh screenshot)
+            # Can chuyen sang screen coords bang cach cong window offset
+            img_x = action.get("x", 0)
+            img_y = action.get("y", 0)
+            try:
+                from core.window_manager import get_window_rect_by_pid
+                win_rect = get_window_rect_by_pid(self.pid)
+                if win_rect:
+                    screen_x = win_rect[0] + img_x
+                    screen_y = win_rect[1] + img_y
+                else:
+                    screen_x, screen_y = img_x, img_y
+                logger.info(f"  -> Silent mouse_click: img({img_x},{img_y}) -> screen({screen_x},{screen_y})")
+                import pyautogui
+                pyautogui.click(screen_x, screen_y)
+            except Exception as e:
+                logger.warning(f"  -> mouse_click failed: {e}")
+
     def _find_uia_wrapper(self, app, elem: IndexedElement):
         """
         Tìm pywinauto wrapper cho element (để gọi .click() silent).
@@ -726,10 +887,11 @@ class OSPlanningAgent:
         elements_text: str,
         indexed_elements: list[IndexedElement],
         max_retries: int = 3,
+        image_size: tuple[int, int] = None,
     ) -> AgentStep:
-        """Gọi Gemini với screenshot + element list. Retry khi 503/429."""
+        """Goi Gemini voi screenshot + element list. Retry khi 503/429."""
 
-        # Đọc screenshot
+        # Doc screenshot
         with open(screenshot_path, "rb") as f:
             image_bytes = f.read()
 
@@ -746,12 +908,19 @@ class OSPlanningAgent:
         # Select appropriate prompt based on app type
         if self.app_type == "powerpoint":
             system_prompt = POWERPOINT_PROMPT
+        elif self.app_type == "browser":
+            system_prompt = BROWSER_PROMPT
         else:
             system_prompt = SYSTEM_PROMPT
 
-        # User prompt
+        # User prompt - them kich thuoc anh de Gemini biet coordinate space
+        size_hint = ""
+        if image_size:
+            size_hint = f"\nSCREENSHOT SIZE: {image_size[0]}x{image_size[1]} pixels. All mouse_click x,y coordinates must be within this range (0 <= x < {image_size[0]}, 0 <= y < {image_size[1]}).\n"
+
         user_prompt = (
             f"USER TASK: {self.user_task}\n\n"
+            f"{size_hint}"
             f"INTERACTIVE UI ELEMENTS:\n{elements_text}\n"
             f"{history_text}\n\n"
             f"Step {step_idx + 1}: Analyze the screenshot and UI elements. "
@@ -901,7 +1070,7 @@ class OSPlanningAgent:
                         "move_duration": 1.0,
                     })
                 else:
-                    # Bước 1: Dùng UIA selector thay tọa độ cứng
+                    # Dung UIA selector thay toa do cung
                     selector = action.get("selector", {})
                     fallback = action.get("fallback_coords", {})
                     replay_plan.append({
@@ -911,6 +1080,19 @@ class OSPlanningAgent:
                         "fallback_coords": fallback,
                         "move_duration": 0.5,
                     })
+
+            elif action_type == "mouse_click":
+                x = action.get("x", 0)
+                y = action.get("y", 0)
+                replay_plan.append({
+                    "action_type": "mouse_click",
+                    "target_value": f"Click at ({x}, {y})",
+                    "x": x,
+                    "y": y,
+                    "is_window_relative": True,
+                    "screenshot_path": step.screenshot_path,
+                    "move_duration": 0.8,
+                })
 
             elif action_type == "type_text":
                 target_val = action.get("target_value")

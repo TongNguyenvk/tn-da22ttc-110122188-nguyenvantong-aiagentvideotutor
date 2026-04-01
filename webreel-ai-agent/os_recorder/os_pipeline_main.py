@@ -267,6 +267,11 @@ def run_os_pipeline_v3_dual(
 
         result["audio_files"] = [a["path"] if a else None for a in audio_files]
 
+    # Check cancellation after TTS
+    if cancel_event and cancel_event.is_set():
+        logger.info("Pipeline cancelled after Phase 2 (TTS)")
+        return result
+
     # ================================================================
     # PHASE 2.5: Inject exact TTS durations
     # ================================================================
@@ -302,49 +307,10 @@ def run_os_pipeline_v3_dual(
             json.dump(plan, f, indent=2, ensure_ascii=False)
 
     # ================================================================
-    # CLEANUP STATE
+    # CLEANUP STATE - Bo qua, nguoi dung tu reset o buoc "San sang quay"
     # ================================================================
     current_pid = target_pid
-    if not dry_run and app_executable:
-        if "excel" not in app_executable.lower() and "powerpnt" not in app_executable.lower() and "winword" not in app_executable.lower():
-            import psutil
-            import subprocess
-            logger.info(f"\n{'='*60}")
-            logger.info(f"  CLEANUP STATE: Restarting '{app_executable}'")
-            logger.info(f"{'='*60}")
-            try:
-                process = psutil.Process(current_pid)
-                process.terminate()
-                process.wait(timeout=3)
-                logger.info(f"  Killed dirty process PID: {current_pid}")
-            except Exception as e:
-                logger.warning(f"  Could not kill old process: {e}")
 
-            logger.info(f"  Starting new instance...")
-            if "excel" in app_executable.lower():
-                proc = subprocess.Popen("start excel", shell=True)
-                time.sleep(4)
-            else:
-                proc = subprocess.Popen([app_executable])
-                time.sleep(2)
-            
-            from core.window_manager import get_visible_windows
-            windows = get_visible_windows()
-            if "notepad" in app_executable.lower():
-                n_win = next((w for w in windows if "notepad" in w["title"].lower()), None)
-                current_pid = n_win["pid"] if n_win else proc.pid
-            elif "excel" in app_executable.lower():
-                e_win = next((w for w in windows if "excel" in w["title"].lower() or "book" in w["title"].lower()), None)
-                current_pid = e_win["pid"] if e_win else proc.pid
-            else:
-                current_pid = proc.pid
-                
-            logger.info(f"  New (Clean) PID: {current_pid}")
-            
-            # Update screenshot capture PID
-            if enable_dual_output and screenshot_capture:
-                screenshot_capture.target_pid = current_pid
-                logger.info(f"  [Dual-Output] Updated screenshot PID to {current_pid}")
 
     # ================================================================
     # PHASE 3: Record-Replay + Screenshot Capture (SONG SONG)
@@ -409,7 +375,13 @@ def run_os_pipeline_v3_dual(
             output_dir=str(project_dir),
             video_name=video_name,
             screenshot_callback=screenshot_callback,
+            cancel_event=cancel_event,
         )
+
+        # Check if replay was cancelled
+        if replay_result.get("cancelled"):
+            logger.info("Pipeline cancelled during Phase 3 (Recording)")
+            return result
 
         result["video_raw_path"] = replay_result.get("video_path")
         result["trace_path"] = replay_result.get("trace_path")
@@ -428,6 +400,12 @@ def run_os_pipeline_v3_dual(
         and result.get("audio_files")
         and any(a for a in result["audio_files"] if a)
     ):
+        # Check cancellation before Phase 4
+        if cancel_event and cancel_event.is_set():
+            logger.info("Pipeline cancelled before Phase 4 (Mix)")
+            result["video_final_path"] = result.get("video_raw_path")
+            return result
+
         logger.info(f"\n{'='*60}")
         logger.info(f"  PHASE 4: Mix audio + video")
         logger.info(f"{'='*60}")
@@ -442,6 +420,7 @@ def run_os_pipeline_v3_dual(
                 trace_path=result["trace_path"],
                 audio_files=[a for a in result["audio_files"] if a],
                 output_path=str(final_video),
+                cancel_event=cancel_event,
             )
             result["video_final_path"] = str(final_video)
             logger.info(f"  Final video: {final_video}")
@@ -618,70 +597,103 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent))
 
     parser = argparse.ArgumentParser(description="OS Pipeline V3 with Dual Output")
-    parser.add_argument("--pid", type=int, help="PID ứng dụng đích")
-    parser.add_argument("--task", type=str, required=True, help="Mô tả task")
-    parser.add_argument("--output", type=str, default="workspace/pipeline_v3_dual", help="Thư mục output")
-    parser.add_argument("--name", type=str, default="os_video", help="Tên video")
-    parser.add_argument("--voice", type=str, default="banmai", help="Giọng TTS")
-    parser.add_argument("--max-steps", type=int, default=15, help="Số bước tối đa")
-    parser.add_argument("--dry-run", action="store_true", help="Chỉ plan + TTS, không quay")
-    parser.add_argument("--skip-tts", action="store_true", help="Bỏ qua TTS")
-    parser.add_argument("--notepad", action="store_true", help="Tự mở Notepad")
-    parser.add_argument("--excel", action="store_true", help="Tự mở Excel")
-    parser.add_argument("--word", action="store_true", help="Tự mở Word")
-    parser.add_argument("--no-dual-output", action="store_true", help="Tắt dual output (chỉ quay video)")
+    parser.add_argument("--pid", type=int, help="PID ung dung dich")
+    parser.add_argument("--task", type=str, required=True, help="Mo ta task")
+    parser.add_argument("--output", type=str, default="workspace/pipeline_v3_dual", help="Thu muc output")
+    parser.add_argument("--name", type=str, default="os_video", help="Ten video")
+    parser.add_argument("--voice", type=str, default="banmai", help="Giong TTS")
+    parser.add_argument("--max-steps", type=int, default=15, help="So buoc toi da")
+    parser.add_argument("--dry-run", action="store_true", help="Chi plan + TTS, khong quay")
+    parser.add_argument("--skip-tts", action="store_true", help="Bo qua TTS")
+    parser.add_argument("--notepad", action="store_true", help="Tu mo Notepad")
+    parser.add_argument("--excel", action="store_true", help="Tu mo Excel")
+    parser.add_argument("--word", action="store_true", help="Tu mo Word")
+    parser.add_argument("--chrome", action="store_true", help="Tu mo Google Chrome")
+    parser.add_argument("--edge", action="store_true", help="Tu mo Microsoft Edge")
+    parser.add_argument("--firefox", action="store_true", help="Tu mo Mozilla Firefox")
+    parser.add_argument("--app", type=str, default=None, help="Ten process ung dung bat ky (VD: mspaint.exe)")
+    parser.add_argument("--no-dual-output", action="store_true", help="Tat dual output (chi quay video)")
     args = parser.parse_args()
 
     pid = args.pid
     app_executable = None
-    
+
+    # IDE exclusion helper
+    def _not_ide(title):
+        t = title.lower()
+        return not any(x in t for x in ["visual studio code", "cursor", "kiro", ".py"])
+
+    def _find_or_launch(exe, filter_fn, start_cmd, label, wait_s=4):
+        """Tim cua so ung dung, neu khong thay thi khoi dong va tim lai."""
+        from core.window_manager import get_visible_windows
+        import subprocess as _sp
+
+        wins = get_visible_windows()
+        win = next((w for w in wins if filter_fn(w)), None)
+        if not win:
+            _sp.Popen(start_cmd, shell=True)
+            time.sleep(wait_s)
+            wins = get_visible_windows()
+            win = next((w for w in wins if filter_fn(w)), None)
+        if win:
+            print(f"Su dung {label} (PID={win['pid']})")
+            return win["pid"], exe
+        return None, exe
+
     if args.excel:
-        from core.window_manager import get_visible_windows
-        import os
-        app_executable = "excel.exe"
-        windows = get_visible_windows()
-        
-        def is_excel(w):
-            t = w["title"].lower()
-            return ("excel" in t or "book" in t) and "visual studio code" not in t
-            
-        app_win = next((w for w in windows if is_excel(w)), None)
-        if not app_win:
-            os.system("start excel")
-            time.sleep(4)
-            windows = get_visible_windows()
-            app_win = next((w for w in windows if is_excel(w)), None)
-        if app_win:
-            pid = app_win["pid"]
-            print(f"Sử dụng Excel (PID={pid})")
-    
+        pid, app_executable = _find_or_launch(
+            "excel.exe",
+            lambda w: ("excel" in w["title"].lower() or "book" in w["title"].lower()) and _not_ide(w["title"]),
+            "start excel", "Excel",
+        )
+
     elif args.word:
-        from core.window_manager import get_visible_windows
-        import os
-        app_executable = "winword.exe"
-        windows = get_visible_windows()
-        
-        def is_word(w):
-            t = w["title"].lower()
-            return ("word" in t or "document" in t) and "visual studio code" not in t
-            
-        app_win = next((w for w in windows if is_word(w)), None)
-        if not app_win:
-            os.system("start winword")
-            time.sleep(4)
-            windows = get_visible_windows()
-            app_win = next((w for w in windows if is_word(w)), None)
-        if app_win:
-            pid = app_win["pid"]
-            print(f"Sử dụng Word (PID={pid})")
-    
+        pid, app_executable = _find_or_launch(
+            "winword.exe",
+            lambda w: ("word" in w["title"].lower() or "document" in w["title"].lower()) and _not_ide(w["title"]),
+            "start winword", "Word",
+        )
+
+    elif args.chrome:
+        pid, app_executable = _find_or_launch(
+            "chrome.exe",
+            lambda w: ("google chrome" in w["title"].lower() or ("chrome" in w["title"].lower() and "edge" not in w["title"].lower())),
+            'start chrome "about:blank"', "Chrome",
+        )
+
+    elif args.edge:
+        pid, app_executable = _find_or_launch(
+            "msedge.exe",
+            lambda w: "edge" in w["title"].lower() or "msedge" in w["title"].lower(),
+            'start msedge "about:blank"', "Edge",
+        )
+
+    elif args.firefox:
+        pid, app_executable = _find_or_launch(
+            "firefox.exe",
+            lambda w: "firefox" in w["title"].lower() or "mozilla" in w["title"].lower(),
+            'start firefox "about:blank"', "Firefox",
+        )
+
+    elif args.app:
+        # Generic: any application by process name
+        app_name = args.app
+        if not app_name.lower().endswith(".exe"):
+            app_name += ".exe"
+        base = app_name.replace(".exe", "").lower()
+        pid, app_executable = _find_or_launch(
+            app_name,
+            lambda w, b=base: b in w["title"].lower(),
+            f"start {app_name}", app_name,
+        )
+
     elif args.notepad or not pid:
         from core.window_manager import get_visible_windows
         import subprocess
 
         app_executable = "notepad.exe"
         windows = get_visible_windows()
-        
+
         def is_real_notepad(w):
             title = w["title"].lower()
             if "notepad" not in title:
@@ -689,7 +701,7 @@ if __name__ == "__main__":
             if any(x in title for x in ["kiro", "visual studio", "vscode", "code - ", "cursor"]):
                 return False
             return " - notepad" in title or title == "notepad"
-        
+
         notepad = next((w for w in windows if is_real_notepad(w)), None)
         if not notepad:
             proc = subprocess.Popen([app_executable])
@@ -697,13 +709,13 @@ if __name__ == "__main__":
             windows = get_visible_windows()
             notepad_new = next((w for w in windows if is_real_notepad(w)), None)
             pid = notepad_new["pid"] if notepad_new else proc.pid
-            print(f"Khởi động Notepad mới (PID={pid})")
+            print(f"Khoi dong Notepad moi (PID={pid})")
         else:
             pid = notepad["pid"]
-            print(f"Sử dụng Notepad hiện tại (PID={pid}, Title='{notepad['title']}')")
-            
+            print(f"Su dung Notepad hien tai (PID={pid}, Title='{notepad['title']}')")
+
     if not pid:
-        print("Không có PID hợp lệ!")
+        print("Khong co PID hop le!")
         sys.exit(1)
 
     result = run_os_pipeline_v3_dual(
@@ -718,3 +730,4 @@ if __name__ == "__main__":
         app_executable=app_executable,
         enable_dual_output=not args.no_dual_output,
     )
+

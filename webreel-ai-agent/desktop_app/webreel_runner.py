@@ -156,7 +156,10 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
 
     start_time = time.time()
 
-    # Use Popen so we can kill the process on cancel
+    # Use Popen so we can kill the process on cancel.
+    # IMPORTANT: We use threads to drain stdout/stderr continuously to prevent
+    # a deadlock where the child process blocks because the OS pipe buffer is
+    # full (typically 4KB-64KB) while the parent waits for the child to finish.
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -166,6 +169,27 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
         env=env,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
     )
+
+    # Drain stdout/stderr in background threads to prevent pipe buffer deadlock
+    import threading
+    stdout_chunks = []
+    stderr_chunks = []
+
+    def _drain_pipe(pipe, chunks):
+        """Read from pipe until EOF, appending to chunks list."""
+        try:
+            while True:
+                data = pipe.read(4096)
+                if not data:
+                    break
+                chunks.append(data)
+        except Exception:
+            pass
+
+    stdout_thread = threading.Thread(target=_drain_pipe, args=(proc.stdout, stdout_chunks), daemon=True)
+    stderr_thread = threading.Thread(target=_drain_pipe, args=(proc.stderr, stderr_chunks), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
 
     # Poll loop: check cancel_event every 0.5s
     cancelled = False
@@ -177,13 +201,17 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
             break
         time.sleep(0.5)
 
+    # Wait for drain threads to finish (they will EOF when process exits)
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
+
     elapsed = time.time() - start_time
 
     if cancelled:
         raise asyncio.CancelledError("Webreel recording cancelled by user")
 
-    stdout_data = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
-    stderr_data = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+    stdout_data = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+    stderr_data = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
     if stdout_data:
         logger.info(f"[webreel stdout]:\n{stdout_data}")
