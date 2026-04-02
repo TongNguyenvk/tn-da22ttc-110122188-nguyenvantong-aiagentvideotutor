@@ -677,35 +677,49 @@ def execute_plan(
                     continue
 
             if not dry_run:
-                if not target_value or target_value == "Type text":
-                    # Browser/keyboard-only flow: go truc tiep vao element dang focus
-                    # Khong dung pywinauto type_keys vi no go vao top_window
-                    is_ascii = all(ord(c) < 128 for c in text)
-                    if is_ascii:
-                        # ASCII (URL, email): pyautogui.write() go tung ky tu, tu nhien
-                        logger.info(f"  -> Natural typing (ASCII): {text[:40]}...")
-                        pyautogui.write(text, interval=char_delay)
-                        time.sleep(0.3)
+                # Detect app type for special handling
+                app_type = "general"
+                try:
+                    from pywinauto import Application
+                    _app = Application(backend="uia").connect(process=target_pid)
+                    win = _app.top_window()
+                    window_title = win.window_text().lower()
+                    
+                    if any(b in window_title for b in ["chrome", "edge", "firefox", "brave", "opera"]):
+                        app_type = "browser"
+                    elif "word" in window_title or ".docx" in window_title:
+                        app_type = "word"
+                except Exception:
+                    pass
+                
+                # Strategy: Dung pywinauto.type_keys() cho tat ca (giong do duong, bypass Telex)
+                # Browser flow cung dung pywinauto.type_keys() vi do duong dung ma van duoc
+                logger.info(f"  -> PyWinAuto Type: {text[:40]}...")
+                try:
+                    from pywinauto import Application
+                    _app = Application(backend="uia").connect(process=target_pid)
+                    win = _app.top_window()
+                    
+                    # Xu ly dac biet cho Word: \n -> Enter key
+                    if app_type == "word" and "\n" in text:
+                        logger.info(f"  -> Word detected, handling newlines")
+                        parts = text.split("\n")
+                        for idx, part in enumerate(parts):
+                            if part:
+                                win.type_keys(part, with_spaces=True, pause=char_delay)
+                            if idx < len(parts) - 1:
+                                win.type_keys("{ENTER}", pause=0.1)
                     else:
-                        # Unicode (tieng Viet): clipboard paste vi pyautogui khong ho tro
-                        logger.info(f"  -> Clipboard paste (Unicode): {text[:40]}...")
-                        import pyperclip
-                        pyperclip.copy(text)
-                        pyautogui.hotkey('ctrl', 'v')
-                        time.sleep(0.3)
-                else:
-                    logger.info(f"  -> PyWinAuto Type: {text[:40]}...")
-                    try:
-                        from pywinauto import Application
-                        _app = Application(backend="uia").connect(process=target_pid)
-                        win = _app.top_window()
                         win.type_keys(text, with_spaces=True, pause=char_delay)
-                        time.sleep(0.5)
-                    except Exception as e:
-                        logger.warning(f"  -> pywinauto type_keys failed: {e}")
-                        import pyperclip
-                        pyperclip.copy(text)
-                        pyautogui.hotkey('ctrl', 'v')
+                    
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"  -> pywinauto type_keys failed: {e}, fallback to clipboard")
+                    import pyperclip
+                    pyperclip.copy(text)
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(0.3)
+            
             trace.log_step(i, "type", f"type \"{text[:40]}\"", step_start_ms)
 
         # --- SCROLL ---

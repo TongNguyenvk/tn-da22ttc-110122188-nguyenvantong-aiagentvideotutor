@@ -262,6 +262,12 @@ The screenshot has a RED COORDINATE GRID overlay with labeled axes. USE these gr
 - To find coordinates of a target element, look at which grid lines are NEAREST to it and interpolate.
 - Example: If a button is halfway between x=1400 and x=1600 lines, and just below y=800 line, its coordinates are approximately (1500, 820).
 
+SPECIAL SHORTCUTS FOR COMMON TASKS:
+1. GOOGLE SEARCH: Instead of clicking the search box, use press_hotkey ["ctrl", "l"] to focus address bar, then type_text the query, then press_key "enter". This is MORE RELIABLE than clicking.
+2. NAVIGATE TO URL: Use press_hotkey ["ctrl", "l"], then type_text the URL, then press_key "enter".
+3. NEW TAB: Use press_hotkey ["ctrl", "t"].
+4. CLOSE TAB: Use press_hotkey ["ctrl", "w"].
+
 AVAILABLE ACTIONS:
 - mouse_click: Click at specific screen coordinates. Use "x" and "y" fields (integers). Use this for ALL web page elements.
 - type_text: Type text into the focused element. Use "text" field.
@@ -273,11 +279,10 @@ AVAILABLE ACTIONS:
 
 RESPONSE FORMAT (JSON only):
 {
-  "thought": "I see the Compose button near x=60, between y=200 and y=400 grid lines, approximately at y=260",
+  "thought": "I see the Google search page. Instead of clicking the search box, I'll use Ctrl+L to focus the address bar",
   "action": {
-    "action_type": "mouse_click",
-    "x": 60,
-    "y": 260
+    "action_type": "press_hotkey",
+    "keys": ["ctrl", "l"]
   },
   "narration": "Vietnamese narration (2-3 sentences, WITH DIACRITICS)",
   "is_done": false
@@ -286,6 +291,7 @@ RESPONSE FORMAT (JSON only):
 BROWSER TIPS (MUST follow):
 - To focus the ADDRESS BAR: Use press_hotkey ["ctrl", "l"]. NEVER click on the address bar directly.
 - To type a URL: First press_hotkey ["ctrl", "l"], then type_text with the URL, then press_key "enter".
+- For GOOGLE SEARCH: Use press_hotkey ["ctrl", "l"], type_text the query, press_key "enter". DO NOT try to click the search box.
 - Tab key can cycle focus between input fields on a web page.
 
 EMAIL COMPOSE WORKFLOW (Gmail/Outlook):
@@ -302,12 +308,13 @@ RULES:
 2. For web page elements: ALWAYS use "mouse_click" with coordinates READ FROM THE GRID.
 3. In your "thought", ALWAYS mention the nearest grid lines to explain your coordinate choice.
 4. NEVER click directly on the browser address bar. Use press_hotkey ["ctrl", "l"] instead.
-5. When a field is ALREADY FOCUSED (after Tab or after opening compose), use type_text directly. DO NOT click first.
-6. Coordinates should be the CENTER of the target element.
-7. Write narrations in Vietnamese WITH FULL DIACRITICS.
-8. Set "is_done": true ONLY when the FULL task is 100% complete.
-9. If a page is loading, use "wait" with appropriate duration.
-10. NEVER use dangerous keys (delete, backspace, win).
+5. For GOOGLE SEARCH, ALWAYS use Ctrl+L shortcut instead of clicking the search box.
+6. When a field is ALREADY FOCUSED (after Tab or after opening compose), use type_text directly. DO NOT click first.
+7. Coordinates should be the CENTER of the target element.
+8. Write narrations in Vietnamese WITH FULL DIACRITICS.
+9. Set "is_done": true ONLY when the FULL task is 100% complete.
+10. If a page is loading, use "wait" with appropriate duration.
+11. NEVER use dangerous keys (delete, backspace, win).
 """
 
 # ---------------------------------------------------------------------------

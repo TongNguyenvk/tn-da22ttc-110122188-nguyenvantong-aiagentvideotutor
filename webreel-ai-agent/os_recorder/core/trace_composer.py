@@ -352,11 +352,31 @@ def compose_video_from_trace(
 
     # Use Popen + poll so we can kill FFmpeg when cancelled
     import time
+    import threading
+    
+    # Buffers to collect output without blocking
+    stdout_lines = []
+    stderr_lines = []
+    
+    def read_stream(stream, buffer):
+        """Read stream line by line to prevent buffer overflow"""
+        try:
+            for line in iter(stream.readline, b''):
+                buffer.append(line.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+    
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    
+    # Start threads to read stdout/stderr continuously
+    stdout_thread = threading.Thread(target=read_stream, args=(proc.stdout, stdout_lines), daemon=True)
+    stderr_thread = threading.Thread(target=read_stream, args=(proc.stderr, stderr_lines), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
 
     # Poll loop: check cancel_event while FFmpeg runs
     while proc.poll() is None:
@@ -368,8 +388,11 @@ def compose_video_from_trace(
             return video_path
         time.sleep(0.3)
 
-    stdout_data = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
-    stderr_data = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+    # Wait for reader threads to finish
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    
+    stderr_data = "".join(stderr_lines)
 
     if proc.returncode != 0:
         print(f"[TraceComposer] ffmpeg stderr:\n{stderr_data}")

@@ -106,18 +106,41 @@ class ExcelEngine:
             try:
                 pythoncom.CoInitialize()
                 install_message_filter()  # Cài Message Filter cho thread mới
-                self._excel = win32com.client.GetActiveObject("Excel.Application")
+                
+                # Thử GetActiveObject trước
+                try:
+                    self._excel = win32com.client.GetActiveObject("Excel.Application")
+                    self._thread_id = current_thread
+                    self.connected = True
+                    logger.info(f"  [ExcelEngine] Reconnect thành công (GetActiveObject)")
+                    return
+                except Exception as e1:
+                    logger.debug(f"  [ExcelEngine] GetActiveObject failed: {e1}, trying Dispatch...")
+                
+                # Fallback: Dispatch
+                self._excel = win32com.client.Dispatch("Excel.Application")
                 self._thread_id = current_thread
+                self.connected = True
+                logger.info(f"  [ExcelEngine] Reconnect thành công (Dispatch)")
+                
             except Exception as e:
                 logger.error(f"  [ExcelEngine] Lỗi reconnect COM thread: {e}")
+                self.connected = False
+                self._excel = None
 
     def get_cell_coordinates(self, cell_address: str):
         """Lấy tọa độ X, Y (Pixel màn hình) của một ô (Ví dụ: 'B6')."""
+        # Reconnect nếu chưa connected hoặc connection bị stale
         if not self.connected or not self._excel:
             if not self.connect():
                 return None, None
                 
         self._check_thread()
+        
+        # Kiểm tra lại sau _check_thread
+        if not self.connected or not self._excel:
+            logger.error("  [ExcelEngine] Connection failed after _check_thread")
+            return None, None
         
         # Retry với exponential backoff khi Excel busy
         for attempt in range(8):
@@ -217,11 +240,17 @@ class ExcelEngine:
 
     def inject_text(self, cell_address: str, text: str) -> bool:
         """Bơm text thẳng vào Value của Cell để bypass Unikey / Bàn phím."""
+        # Reconnect nếu chưa connected hoặc connection bị stale
         if not self.connected or not self._excel:
             if not self.connect():
                 return False
                 
         self._check_thread()
+        
+        # Kiểm tra lại sau _check_thread
+        if not self.connected or not self._excel:
+            logger.error("  [ExcelEngine] Connection failed after _check_thread")
+            return False
         
         # Retry với exponential backoff khi Excel busy
         for attempt in range(8):  # Tăng lên 8 lần
@@ -270,11 +299,17 @@ class ExcelEngine:
 
     def silent_select_cell(self, cell_address: str) -> bool:
         """Thực hiện Select ô trong Excel một cách im lặng qua COM."""
+        # Reconnect nếu chưa connected hoặc connection bị stale
         if not self.connected or not self._excel:
             if not self.connect():
                 return False
                 
         self._check_thread()
+        
+        # Kiểm tra lại sau _check_thread
+        if not self.connected or not self._excel:
+            logger.error("  [ExcelEngine] Connection failed after _check_thread")
+            return False
         
         # Retry với exponential backoff khi Excel busy
         for attempt in range(8):  # Tăng lên 8 lần

@@ -14,6 +14,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Log which file is being used
+logger.info(f"[WEBREEL_RUNNER] Loaded from: {__file__}")
+
 OUTPUT_DIR = Path("output")
 # Read CDP URL from environment variable (for Docker), fallback to localhost
 CDP_URL = os.getenv("CHROME_CDP_URL", "http://localhost:9222")
@@ -49,18 +52,24 @@ def check_chrome_debug_running(auto_start: bool = True, cdp_url: str = None) -> 
         if os.name == "nt":  # Windows
             # Use new browser_launcher module with Registry lookup
             try:
+                # Parse port from check_url
+                import urllib.parse
+                parsed = urllib.parse.urlparse(check_url)
+                target_port = parsed.port or 9222
+                
                 # Import browser launcher
                 desktop_app_dir = Path(__file__).resolve().parents[1] / "desktop_app"
                 sys.path.insert(0, str(desktop_app_dir))
                 
                 from browser_launcher import launch_chrome_with_cdp
                 
-                logger.info("Using Registry-based Chrome launcher...")
-                cdp_url = launch_chrome_with_cdp(port=9222, kill_existing=True)
-                logger.info(f"Chrome launched via Registry: {cdp_url}")
+                logger.info(f"[SRC] Using Registry-based Chrome launcher on port {target_port}...")
+                logger.info(f"[SRC] Parsed from check_url: {check_url}")
+                cdp_url = launch_chrome_with_cdp(port=target_port, kill_existing=True)
+                logger.info(f"[SRC] Chrome launched via Registry: {cdp_url}")
                 
-                # Verify connection
-                time.sleep(1)
+                # Verify connection on the CORRECT port
+                time.sleep(2)
                 try:
                     response = requests.get(f"{check_url}/json/version", timeout=2)
                     chrome_info = response.json()
