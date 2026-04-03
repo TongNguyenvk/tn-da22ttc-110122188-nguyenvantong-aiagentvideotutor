@@ -2,802 +2,919 @@
 
 ## Tổng quan
 
-Tài liệu này mô tả chi tiết luồng làm việc của hệ thống AI Agent Video Tutor, từ input của user đến output video hoàn chỉnh.
+Tài liệu này mô tả chi tiết luồng làm việc của hệ thống AI Agent Video Tutor, từ input của user đến output video hoàn chỉnh. Hệ thống có 2 pipeline riêng biệt:
 
-## Pipeline Overview
+1. **Web Browser Pipeline**: Dùng browser-use + webreel cho Chrome, Edge, Firefox
+2. **Desktop OS Pipeline**: Dùng pywinauto + FFmpeg + Gemini Vision cho Excel, Word, PowerPoint, Desktop Apps
+
+## Desktop OS Pipeline (os_recorder/)
+
+Pipeline này là core của hệ thống, dùng cho Excel, Word, PowerPoint, Notepad và các desktop apps khác.
+
+### Pipeline Overview
 
 ```
 ┌─────────────────┐
-│  User Input     │  Mô tả tác vụ bằng ngôn ngữ tự nhiên
+│  User Input     │  Task description + Target app (Excel/Word/PPT)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 1: Planning (Silent)     │  30-60s
+│  - Gemini Vision Agent          │
+│  - Screenshot + UI tree          │
+│  - Generate plan.json            │
+│  - Generate narrations           │
+│  - NO video recording            │
+│  - NO mouse movement             │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 2: TTS (Parallel)        │  5-10s total
+│  - Edge TTS (Microsoft Azure)   │
+│  - asyncio.gather for parallel  │
+│  - Generate all MP3 segments    │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 2.5: Review (Optional)   │  User interaction
+│  - Show narration script in UI  │
+│  - User can edit text            │
+│  - Update plan.json              │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 2.5: Inject Durations    │  <1s
+│  - Measure exact TTS durations  │
+│  - Inject into plan.json         │
+│  - Update pause steps            │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 3: Ready Confirmation    │  User interaction
+│  - User resets app state         │
+│  - (Undo changes from Phase 1)  │
+│  - Click "Ready to Record"       │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 3: Record-Replay          │  10-30s
+│  - Read plan.json                │
+│  - FFmpeg screen capture         │
+│  - pywinauto silent execution    │
+│  - Screenshot capture (parallel) │
+│  - Generate trace.json           │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 4: Audio Sync             │  5-10s
+│  - Trace-driven composition      │
+│  - FFmpeg adelay + amix          │
+│  - Exact timestamp placement     │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│  Phase 5: Document Generation    │  5-10s (parallel)
+│  - DOCX renderer                 │
+│  - PDF renderer                  │
+│  - Screenshots + narrations      │
+└────────┬────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Final Output   │  video_final.mp4 + tutorial.docx + tutorial.pdf
+└─────────────────┘
+```
+
+---
+
+## Phase 1: Planning (Silent Mode)
+
+### Mục đích
+Agent "dò đường" để hiểu task và lên kịch bản, KHÔNG quay video, KHÔNG chiếm chuột người dùng.
+
+### Input
+- Task description (tiếng Việt hoặc tiếng Anh)
+- Target PID (Process ID của ứng dụng)
+- Max steps (giới hạn số bước, mặc định 15)
+
+### Quy trình
+
+**1. Khởi tạo Agent**
+- Connect tới ứng dụng qua PID bằng pywinauto
+- Auto-detect app type (Excel, Word, PowerPoint, Browser, General)
+- Load system prompt phù hợp với app type
+
+**2. Agent Loop (Silent Exploration)**
+
+Mỗi bước trong loop:
+
+a. **Capture State**
+   - Chụp screenshot cửa sổ ứng dụng
+   - Lấy UI element tree (UIA - UI Automation)
+   - Prune tree: chỉ giữ interactive elements (Button, Edit, MenuItem, etc.)
+   - Index elements: gán số thứ tự + tọa độ cho mỗi element
+
+b. **Query Gemini Vision**
+   - Gửi screenshot + indexed element list
+   - Gemini phân tích và quyết định action tiếp theo
+   - Response format: JSON với thought, action, narration, is_done
+
+c. **Execute Action (Silent)**
+   - Dùng pywinauto API (KHÔNG di chuyển chuột vật lý)
+   - Supported actions:
+     - click_element: Click by element index
+     - type_text: Type vào element đang focus
+     - press_key: Nhấn phím đơn (enter, tab, escape, arrow keys)
+     - press_hotkey: Tổ hợp phím (Ctrl+B, Ctrl+C, F5, etc.)
+     - drag_mouse: Drag từ element này sang element khác
+     - scroll: Cuộn chuột
+     - wait: Đợi (ms)
+     - done: Hoàn thành task
+
+d. **Record Step**
+   - Lưu action vào history
+   - Lưu narration (lời thoại tiếng Việt)
+   - Lưu screenshot
+
+e. **Check Completion**
+   - Nếu is_done = true → dừng loop
+   - Nếu đạt max_steps → dừng loop
+   - Nếu phát hiện loop (5 action giống nhau liên tiếp) → dừng loop
+
+**3. State Reset**
+- Sau khi dò đường xong, agent tự động Undo (Ctrl+Z)
+- Số lần Undo = số action đã thực hiện + 2 (cho chắc)
+- Đưa ứng dụng về trạng thái ban đầu
+
+**4. Generate plan.json**
+- Convert action history thành replay plan
+- Format: JSON array với step_index, action_type, parameters, description
+- Mỗi description có format: "[NARRATION:idx] text..."
+
+### Output
+
+**plan.json** chứa danh sách actions để replay
+
+**Screenshots:** step_000.png, step_001.png, ... (mỗi bước 1 ảnh)
+
+**Narrations:** Extracted từ plan.json
+
+### Đặc điểm quan trọng
+
+**Silent Execution:**
+- Dùng pywinauto UIA backend
+- Không di chuyển chuột vật lý
+- Người dùng vẫn dùng máy bình thường trong lúc agent chạy
+
+**UI Element Pruning:**
+- Giảm từ hàng trăm elements xuống vài chục
+- Chỉ gửi interactive elements cho LLM
+- Tiết kiệm token, tăng accuracy
+
+**Loop Detection:**
+- Phát hiện khi agent lặp lại action 5 lần liên tiếp
+- Ngoại trừ navigation keys (space, right, pagedown) cho PowerPoint
+- Tự động dừng để tránh infinite loop
+
+**App-Specific Prompts:**
+- PowerPoint: Lecturer mode, giải thích nội dung slide
+- Browser: Coordinate grid overlay, mouse_click với (x,y)
+- General: Standard OS automation
+
+---
+
+## Phase 2: TTS Generation (Parallel)
+
+### Mục đích
+Sinh audio cho tất cả narrations song song để tiết kiệm thời gian.
+
+### Input
+- Narrations từ Phase 1
+- Voice selection (vi-VN-HoaiMyNeural, vi-VN-NamMinhNeural, etc.)
+- TTS engine (Edge TTS hoặc FPT.AI)
+
+### Quy trình
+
+**1. Parallel Generation**
+- Dùng asyncio.gather để gọi TTS API song song
+- Mỗi narration → 1 async task
+- Tất cả tasks chạy đồng thời
+
+**2. Edge TTS (Default)**
+- Microsoft Azure TTS
+- Free, unlimited usage
+- Giọng tự nhiên, hỗ trợ tiếng Việt tốt
+- Output: MP3 files
+
+**3. Measure Duration**
+- Dùng ffprobe để đo chính xác duration (ms)
+- Fallback: mutagen library
+- Last resort: estimate từ file size
+
+**4. Handle Failures**
+- Nếu 1 segment fail → append None vào list
+- Continue với các segments còn lại
+- Log warning nhưng không dừng pipeline
+
+### Output
+
+Audio files: narration_000.mp3, narration_001.mp3, ...
+
+Audio metadata: List of {"path": "...", "duration_ms": 2500}
+
+### Timing
+- Sequential: 2-5s per segment → 10-25s total cho 5 segments
+- Parallel: 5-10s total cho tất cả segments (cải thiện 50-80%)
+
+---
+
+## Phase 2.5: Review & Duration Injection
+
+### Part A: Review UI (Optional)
+
+**Mục đích:**
+Cho phép user review và edit narration script trước khi quay.
+
+**UI Flow:**
+1. Pipeline pause sau Phase 2
+2. Show review dialog với editable text fields
+3. User có thể:
+   - Edit narration text
+   - Keep original
+   - Cancel job
+4. Click "Confirm" → continue pipeline
+
+**Update plan.json:**
+- Replace narration text trong description
+- Keep action parameters unchanged
+- Regenerate TTS nếu text thay đổi (future feature)
+
+### Part B: Duration Injection (Automatic)
+
+**Mục đích:**
+Inject exact TTS durations vào plan.json để audio sync chính xác.
+
+**Quy trình:**
+1. Đọc plan.json
+2. Tìm các step có [NARRATION:idx] trong description
+3. Match với audio file tương ứng
+4. Inject duration_ms vào step
+5. Thêm padding 300ms cho natural pacing
+6. Save updated plan.json
+
+---
+
+## Phase 3: Ready-to-Record Confirmation
+
+### Mục đích
+Đảm bảo ứng dụng ở trạng thái ban đầu trước khi quay video thật.
+
+### Lý do cần thiết
+- Phase 1 đã thay đổi state của ứng dụng (dù có Undo)
+- Một số thay đổi không thể Undo hoàn toàn (file save, network request)
+- User cần manually verify state
+
+### UI Flow
+
+**Desktop App (Flet):**
+1. Show dialog: "Sẵn sàng quay. Hãy reset trạng thái ứng dụng rồi bấm Xác nhận."
+2. User actions:
+   - Kiểm tra ứng dụng
+   - Undo thủ công nếu cần (Ctrl+Z)
+   - Đóng/mở lại file nếu cần
+   - Click "Xác nhận" khi ready
+3. Pipeline continues
+
+**CLI Mode:**
+- Print message: "BẤM PHÍM [ENTER] ĐỂ TIẾN HÀNH QUAY..."
+- Wait for Enter key
+- Continue
+
+### Best Practices
+- Đóng tất cả dialogs/popups
+- Đưa cursor về vị trí ban đầu
+- Đảm bảo không có unsaved changes
+- Đảm bảo window ở foreground
+
+---
+
+## Phase 3: Record-Replay
+
+### Mục đích
+Quay video thật với FFmpeg + execute actions từ plan.json.
+
+### Input
+- plan.json (đã inject durations)
+- Target PID
+- Video name
+- Enable dual output flag
+
+### Quy trình
+
+**1. Start FFmpeg Capture**
+- Capture window by title (gdigrab trên Windows)
+- 60 FPS, CRF 18 (high quality)
+- H.264 codec
+- Output: video_raw.mp4
+
+**2. Replay Actions**
+
+Đọc plan.json và execute từng step:
+
+a. **Execute Action**
+   - Dùng pywinauto API (giống Phase 1)
+   - Nhưng lần này có FFmpeg đang quay
+   - Timing chính xác theo duration_ms trong plan
+
+b. **Screenshot Callback (Dual Output)**
+   - Nếu enable_dual_output = True
+   - Sau mỗi action → chụp screenshot
+   - Highlight element đang tương tác
+   - Save: screenshots/step_000.png, step_001.png, ...
+   - Retry logic: max 3 retries nếu fail
+   - Fallback: placeholder image
+
+c. **Generate Trace**
+   - Record exact timestamp của mỗi action
+   - Format: start_time_ms, end_time_ms
+   - Save: trace.json
+
+**3. Stop FFmpeg**
+- Send stop signal
+- Wait for encoding to finish
+- Verify video file exists
+
+### Output
+
+**Video:** video_raw.mp4 (video thuần, chưa có audio)
+
+**Trace:** trace.json với exact timestamps
+
+**Screenshots (if dual output enabled):** step_000.png, step_001.png, ...
+
+### Error Handling
+- Timeout: 60s per step
+- Retry: max 2 times per step
+- Cancel support: check cancel_event mỗi step
+- Graceful degradation: continue nếu screenshot fail
+
+---
+
+## Phase 4: Audio Sync (Trace-Driven)
+
+### Mục đích
+Ghép audio vào video với timing chính xác dựa trên execution trace.
+
+### Tại sao dùng Trace?
+- Không estimation, không guessing
+- Exact timestamp từ thực tế execution
+- Audio placement chính xác tuyệt đối
+
+### Input
+- video_raw.mp4
+- trace.json
+- Audio files (MP3)
+
+### Quy trình
+
+**1. Parse Trace**
+- Đọc trace.json
+- Tìm các step có [TTS:idx] hoặc [NARRATION:idx] tag
+- Build mapping: narration_index → trace_step
+
+**2. Compute Timestamps**
+
+Strategy:
+- Narration i → place tại start_time của step i
+- Prevent overlap: ensure narration i starts after narration i-1 ends
+- Buffer: 800ms giữa các narrations cho natural pacing
+
+**3. FFmpeg Composition**
+
+Dùng filter_complex với anullsrc, concat, amix, apad để place audio tại exact timestamps.
+
+**4. Cancel Support**
+- Use Popen + poll loop
+- Check cancel_event mỗi 300ms
+- Kill FFmpeg process nếu cancelled
+
+### Output
+video_final.mp4 (video + audio synced)
+
+### Accuracy
+- Placement accuracy: ±50ms (limited by FFmpeg precision)
+- No drift: mỗi narration independent
+- No overlap: guaranteed by buffer logic
+
+---
+
+## Phase 5: Document Generation (Dual Output)
+
+### Mục đích
+Tạo tài liệu hướng dẫn (DOCX + PDF) từ screenshots và narrations.
+
+### Điều kiện
+- enable_dual_output = True
+- Screenshots captured trong Phase 3
+
+### Input
+- Screenshots (step_000.png, step_001.png, ...)
+- plan.json hoặc trace.json (để lấy narrations)
+- Video name, task description
+
+### Quy trình
+
+**1. Build Render Plan**
+
+a. **Map Screenshots**
+   - Parse filename: step_(\d+).png → step_index
+   - Build dict: {step_index: screenshot_path}
+
+b. **Extract Narrations**
+   - Parse trace.json
+   - Find steps với [NARRATION:idx] tag
+   - Build dict: {step_index: narration_text}
+
+c. **Match Narration → Screenshot**
+   - Strategy: narration tại step i → screenshot tại step i+1
+   - Lý do: narration mô tả action, screenshot show kết quả
+   - Prevent reuse: mỗi screenshot chỉ dùng 1 lần
+
+**2. Parallel Rendering**
+
+Dùng asyncio.gather để render DOCX và PDF song song:
+
+a. **DOCX Renderer**
+   - python-docx library
+   - Title page với video name
+   - Mỗi step: narration text + screenshot
+   - Professional formatting
+   - Output: video_name.docx
+
+b. **PDF Renderer**
+   - ReportLab library
+   - Same content as DOCX
+   - Better for sharing/printing
+   - Output: video_name.pdf
+
+**3. Handle Missing Screenshots**
+- Nếu screenshot không tồn tại → skip step
+- Log warning
+- Continue với steps còn lại
+
+### Output Structure
+
+```
+output/video_name/
+├── video_name_final.mp4
+├── video_name.docx
+├── video_name.pdf
+└── screenshots/
+    ├── step_000.png
+    ├── step_001.png
+    └── ...
+```
+
+### Document Format
+
+**Title Page:**
+- Video name (large, bold)
+- Task description
+- Creation date
+
+**Step Pages:**
+- Step number
+- Narration text (2-3 sentences)
+- Screenshot (centered, scaled to fit)
+- Action type badge (optional)
+
+### Timing
+- DOCX: 2-3s
+- PDF: 3-5s
+- Parallel: 5-7s total (vs 5-8s sequential)
+
+---
+
+## Web Browser Pipeline (desktop_app/)
+
+Pipeline này dùng cho Chrome, Edge, Firefox và các web-based tasks.
+
+### Pipeline Overview
+
+```
+┌─────────────────┐
+│  User Input     │  Task description + CDP Port
 └────────┬────────┘
          │
          ▼
 ┌─────────────────────────────────┐
 │  Phase 1: Browser Automation    │  30-60s
-│  - Gemini AI planning           │
-│  - Playwright execution         │
-│  - Action history collection    │
+│  - browser-use + Playwright     │
+│  - Gemini AI planning            │
+│  - Action history collection     │
 └────────┬────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────┐
 │  Phase 2: Config Generation     │  <1s
-│  - Parse actions                │
-│  - Extract selectors            │
-│  - Calculate timing             │
+│  - Parse browser-use history    │
+│  - Extract selectors             │
+│  - Generate webreel config       │
 └────────┬────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────┐
 │  Phase 3: AI Review             │  5-10s
-│  - Validate config              │
-│  - Fix errors                   │
-│  - Generate TTS script          │
+│  - Validate config               │
+│  - Fix selectors                 │
+│  - Generate TTS script           │
 └────────┬────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────┐
 │  Phase 4: Video Recording       │  10-30s
-│  - Chrome headless-shell        │
-│  - Execute webreel config       │
-│  - Output raw MP4               │
+│  - webreel (Node.js)             │
+│  - Chrome headless-shell         │
+│  - Output MP4 + timeline         │
 └────────┬────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────┐
-│  Phase 5: Audio Generation      │  2-5s/segment
-│  - FPT.AI TTS                   │
-│  - Download MP3 segments        │
+│  Phase 5: TTS Generation        │  5-10s
+│  - Edge TTS (parallel)           │
+│  - Generate MP3 segments         │
 └────────┬────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────┐
 │  Phase 6: Video Composition     │  5-10s
-│  - Merge video + audio          │
-│  - Sync timeline                │
-│  - Add subtitles (optional)     │
+│  - MoviePy                       │
+│  - Merge video + audio           │
+│  - Timeline sync                 │
 └────────┬────────────────────────┘
          │
          ▼
 ┌─────────────────┐
-│  Final Video    │  MP4 + thumbnail + metadata
+│  Final Output   │  video_final.mp4
 └─────────────────┘
 ```
 
-## Phase 1: Browser Automation
+### Key Differences vs OS Pipeline
 
-### Input
-- Task description (string)
-- Optional: Starting URL
+**Phase 1: browser-use**
+- Dùng Playwright để control browser
+- Accessibility Tree parsing (không phải UIA)
+- Action history format khác
 
-### Process
+**Phase 2: Config Parser**
+- Convert browser-use actions → webreel config
+- Selector extraction: text, ID, class, aria-label, XPath
+- Priority order: text > ID > class
 
-1. **Initialize Agent**
-```python
-from browser_use import Agent
-from langchain_google_genai import ChatGoogleGenerativeAI
+**Phase 4: webreel Recording**
+- Node.js tool (không phải FFmpeg)
+- CDP (Chrome DevTools Protocol)
+- Cursor overlay + HUD built-in
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash-exp",
-    temperature=0.3
-)
-
-agent = Agent(
-    task="Vào google.com và tìm kiếm Python",
-    llm=llm
-)
-```
-
-2. **Execute Task**
-```python
-history = await agent.run()
-```
-
-3. **Collect Action History**
-- Navigate actions với URLs
-- Click actions với element info
-- Input actions với text và selectors
-- Scroll actions (sẽ bị skip sau này)
-- Wait actions với duration
-
-### Output
-```json
-{
-  "task": "Vào google.com và tìm kiếm Python",
-  "urls": ["https://google.com"],
-  "model_actions": [
-    {
-      "navigate": {"url": "https://google.com"},
-      "interacted_element": null
-    },
-    {
-      "input": {"index": 2, "text": "Python"},
-      "interacted_element": "DOMInteractedElement(...)"
-    }
-  ]
-}
-```
-
-### Error Handling
-- Retry on network errors (max 3 times)
-- Fallback to simpler selectors
-- Log all errors for debugging
-- Continue pipeline even if some actions fail
+**No Dual Output:**
+- Web pipeline chưa hỗ trợ DOCX/PDF generation
+- Chỉ output video
 
 ---
 
-## Phase 2: Config Generation (Parser)
+## Desktop App UI (Flet)
 
-### Input
-- browser-use action history (JSON)
-- Video name
+### Main Features
 
-### Process
+**1. Environment Selector**
+- Dropdown: Web / Desktop
+- Dynamic UI: show/hide relevant controls
 
-1. **Initialize Config**
-```python
-config = {
-    "$schema": "https://webreel.dev/schema/v1.json",
-    "videos": {
-        video_name: {
-            "url": first_url,
-            "steps": []
-        }
-    }
-}
-```
+**2. Web Mode Controls**
+- CDP Port selector (9222, 9223, 9224, 9225)
+- Auto-detect Chrome running
+- Launch Chrome with CDP if needed
 
-2. **Parse Each Action**
-```python
-for action in history["model_actions"]:
-    if "navigate" in action:
-        # Skip navigate (already in url field)
-        continue
-    
-    elif "click" in action:
-        selector = extract_selector(action["interacted_element"])
-        steps.append({
-            "action": "click",
-            "selector": selector
-        })
-    
-    elif "input" in action:
-        selector = extract_selector(action["interacted_element"])
-        text = action["input"]["text"]
-        steps.append({
-            "action": "type",
-            "selector": selector,
-            "text": text
-        })
-    
-    elif "wait" in action:
-        ms = action["wait"]["seconds"] * 1000
-        steps.append({
-            "action": "pause",
-            "ms": ms
-        })
-```
+**3. Desktop Mode Controls**
+- Target app dropdown:
+  - Excel, Word, PowerPoint
+  - Notepad
+  - Chrome, Edge, Firefox (OS-level control)
+  - Custom (nhập tên process)
+- Dual output checkbox (DOCX + PDF)
 
-3. **Extract Selectors (Priority Order)**
-```python
-def extract_selector(element):
-    # 1. Text content (most reliable)
-    if element.text:
-        return f'text="{element.text}"'
-    
-    # 2. Title attribute
-    if element.title:
-        return f'[title="{element.title}"]'
-    
-    # 3. ID
-    if element.id:
-        return f'#{element.id}'
-    
-    # 4. Name (for forms)
-    if element.name:
-        return f'[name="{element.name}"]'
-    
-    # 5. Class
-    if element.class_name:
-        return f'.{element.class_name}'
-    
-    # 6. Aria-label
-    if element.aria_label:
-        return f'[aria-label="{element.aria_label}"]'
-    
-    # 7. XPath fallback
-    return element.xpath
-```
+**4. TTS Settings**
+- Enable/disable TTS
+- Engine selector (Edge TTS / FPT.AI)
+- Voice selector (Hoài My, Nam Minh, Aria, Guy)
 
-### Output
-```json
-{
-  "$schema": "https://webreel.dev/schema/v1.json",
-  "videos": {
-    "demo": {
-      "url": "https://google.com",
-      "steps": [
-        {
-          "action": "type",
-          "selector": "#APjFqb",
-          "text": "Python"
-        },
-        {
-          "action": "click",
-          "selector": "input[name=\"btnK\"]"
-        }
-      ]
-    }
-  }
-}
-```
+**5. Job Management**
+- Jobs list với progress bars
+- Status indicators:
+  - Running
+  - Review queue position
+  - Currently reviewing
+- Stop button (force kill)
+- Environment badges (Web/Desktop)
 
-### Validation
-- Check schema compliance
-- Verify all required fields
-- Validate selector syntax
-- Test config với dry-run (optional)
+**6. Phase 2.5 Review UI**
+- Show narration script
+- Editable text fields
+- Confirm/Cancel buttons
+- Queue management (multiple jobs)
+
+**7. Phase 3 Ready Confirmation**
+- Show dialog: "Sẵn sàng quay..."
+- User confirms when ready
+- Continue pipeline
+
+**8. History Tab**
+- Video cards với thumbnail
+- Metadata: name, size, date, source
+- Actions:
+  - Play video
+  - Open folder
+  - Delete (with confirmation)
+- Dual output indicators (DOCX/PDF icons)
+
+### Job Lifecycle
+
+**1. Submit Job**
+- Validate inputs
+- Assign job_id
+- Create cancel_event, review_event, ready_event
+- Add to running_jobs dict
+- Start async task
+
+**2. Progress Updates**
+- Phase 1: 0.0 → 1.0
+- Phase 2: 1.0 → 2.0
+- Phase 2.5 Review: 2.5 (pause)
+- Phase 3 Ready: 3.0 (pause)
+- Phase 3 Record: 3.0 → 4.0
+- Phase 4 Audio: 4.0 → 5.0
+- Phase 5 Document: 5.0 → 6.0
+
+**3. Review Queue**
+- Multiple jobs can wait for review
+- Show queue position
+- Process one at a time
+- Restore main area after review
+
+**4. Cancel Job**
+- Set cancel_event
+- Cancel async task
+- Kill child processes (FFmpeg, node)
+- Unblock waiting events
+- Update UI immediately
+
+**5. Complete Job**
+- Remove from running_jobs
+- Refresh history tab
+- Show success notification
 
 ---
 
-## Phase 3: AI Review & Enhancement
-
-### Input
-- Webreel config (JSON)
-- Original task description
-- Action history
-
-### Process
-
-1. **Calculate Timeline**
-```python
-def calculate_timeline(steps):
-    timeline = []
-    current_time = 0.0
-    
-    for step in steps:
-        if step["action"] == "pause":
-            duration = step["ms"] / 1000
-        elif step["action"] == "navigate":
-            duration = 2.0
-        elif step["action"] == "click":
-            duration = 0.5
-        elif step["action"] == "type":
-            duration = len(step["text"]) * 0.1
-        else:
-            duration = 1.0
-        
-        timeline.append({
-            "action": step["action"],
-            "start_time": current_time,
-            "end_time": current_time + duration
-        })
-        
-        current_time += duration + 0.5  # defaultDelay
-    
-    return timeline
-```
-
-2. **AI Review Prompt**
-```python
-prompt = f"""
-Bạn là chuyên gia review cấu hình webreel.
-
-Task gốc: {task}
-Config hiện tại: {json.dumps(config)}
-Timeline: {json.dumps(timeline)}
-
-Nhiệm vụ:
-1. Kiểm tra config có hợp lệ không
-2. Sửa lỗi selector nếu có (ưu tiên text selector)
-3. Điều chỉnh timing cho mượt mà
-4. Tạo script thuyết minh tiếng Việt tự nhiên
-
-Output JSON:
-{{
-  "enhanced_config": {{...}},
-  "tts_script": [
-    {{"text": "...", "start_time": 0.0, "end_time": 3.0}}
-  ],
-  "review_notes": "..."
-}}
-"""
-```
-
-3. **Call Gemini API**
-```python
-from google import genai
-
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-response = client.models.generate_content(
-    model="gemini-2.0-flash-exp",
-    contents=prompt,
-    config={
-        "temperature": 0.3,
-        "response_mime_type": "application/json"
-    }
-)
-
-result = json.loads(response.text)
-```
-
-### Output
-```json
-{
-  "enhanced_config": {
-    "$schema": "https://webreel.dev/schema/v1.json",
-    "videos": {
-      "demo": {
-        "url": "https://google.com",
-        "steps": [
-          {"action": "pause", "ms": 1000},
-          {"action": "type", "selector": "textarea[name=\"q\"]", "text": "Python"},
-          {"action": "pause", "ms": 500},
-          {"action": "click", "selector": "text=\"Google Search\""}
-        ]
-      }
-    }
-  },
-  "tts_script": [
-    {
-      "text": "Chúng ta bắt đầu bằng cách truy cập Google",
-      "start_time": 0.0,
-      "end_time": 2.5
-    },
-    {
-      "text": "Tiếp theo, nhập từ khóa Python vào ô tìm kiếm",
-      "start_time": 3.0,
-      "end_time": 6.0
-    },
-    {
-      "text": "Cuối cùng, nhấp vào nút Google Search để tìm kiếm",
-      "start_time": 6.5,
-      "end_time": 9.5
-    }
-  ],
-  "review_notes": "Đã thêm pause để trang load, sửa selector thành text-based"
-}
-```
-
-### Fallback
-Nếu AI review fail:
-- Sử dụng config gốc từ parser
-- TTS script rỗng (skip audio)
-- Log warning và continue
-
----
-
-## Phase 4: Video Recording
-
-### Input
-- Enhanced webreel config
-- Video name
-
-### Process
-
-1. **Save Config**
-```python
-config_path = output_dir / "webreel_pipeline.config.json"
-with open(config_path, "w") as f:
-    json.dump(enhanced_config, f, indent=2)
-```
-
-2. **Execute Webreel**
-```bash
-cd output_dir
-npx webreel record
-```
-
-3. **Webreel Internal Process**
-- Launch Chrome headless-shell
-- Navigate to URL
-- Execute each step sequentially
-- Record frames with FFmpeg
-- Overlay cursor và HUD
-- Generate thumbnail
-- Save timeline JSON
-
-### Output Structure
-```
-output/demo/
-├── .webreel/
-│   ├── raw/
-│   │   └── demo.mp4          # Raw recording
-│   └── timelines/
-│       └── demo.timeline.json
-├── videos/
-│   ├── demo.mp4              # Final video (before audio)
-│   └── demo.png              # Thumbnail
-└── webreel_pipeline.config.json
-```
-
-### Error Handling
-- Timeout after 60s per step
-- Retry failed steps (max 2 times)
-- Screenshot on error
-- Detailed error logs
-
----
-
-## Phase 5: Audio Generation
-
-### Input
-- TTS script với timeline
-- Voice selection
-
-### Process
-
-1. **Generate Audio Segments**
-```python
-async def generate_tts_segments(tts_script, voice="banmai"):
-    segments = []
-    
-    for i, item in enumerate(tts_script):
-        output_path = f"tts/segment_{i}.mp3"
-        
-        # Call FPT.AI API
-        url = "https://api.fpt.ai/hmi/tts/v5"
-        headers = {
-            "api-key": os.getenv("FPT_API_KEY"),
-            "voice": voice,
-            "speed": "0"
-        }
-        
-        response = requests.post(
-            url,
-            headers=headers,
-            data=item["text"].encode('utf-8')
-        )
-        
-        # Download MP3
-        audio_url = response.json()["async"]
-        audio_data = requests.get(audio_url).content
-        
-        with open(output_path, "wb") as f:
-            f.write(audio_data)
-        
-        segments.append({
-            "path": output_path,
-            "start_time": item["start_time"],
-            "end_time": item["end_time"],
-            "text": item["text"]
-        })
-    
-    return segments
-```
-
-2. **Validate Audio Duration**
-```python
-from pydub import AudioSegment
-
-for segment in segments:
-    audio = AudioSegment.from_mp3(segment["path"])
-    actual_duration = len(audio) / 1000.0
-    expected_duration = segment["end_time"] - segment["start_time"]
-    
-    if actual_duration > expected_duration:
-        # Speed up audio
-        audio = audio.speedup(playback_speed=actual_duration/expected_duration)
-        audio.export(segment["path"], format="mp3")
-```
-
-### Output
-```
-output/demo/tts/
-├── segment_0.mp3
-├── segment_1.mp3
-└── segment_2.mp3
-```
-
-### Error Handling
-- Retry API calls (max 3 times)
-- Skip segment on persistent failure
-- Log warnings
-- Continue with available segments
-
----
-
-## Phase 6: Video Composition
-
-### Input
-- Video file (MP4)
-- Audio segments (MP3)
-- TTS script với timeline
-- Subtitle flag (optional)
-
-### Process
-
-1. **Load Video**
-```python
-from moviepy.editor import VideoFileClip
-
-video = VideoFileClip("videos/demo.mp4")
-video_duration = video.duration
-```
-
-2. **Create Audio Track**
-```python
-from moviepy.editor import AudioFileClip, CompositeAudioClip
-
-audio_clips = []
-
-for segment in audio_segments:
-    audio = AudioFileClip(segment["path"])
-    audio = audio.set_start(segment["start_time"])
-    audio_clips.append(audio)
-
-final_audio = CompositeAudioClip(audio_clips)
-```
-
-3. **Merge Video + Audio**
-```python
-final_video = video.set_audio(final_audio)
-```
-
-4. **Add Subtitles (Optional)**
-```python
-from moviepy.video.tools.subtitles import SubtitlesClip
-
-# Generate SRT
-srt_content = generate_srt(tts_script)
-with open("subtitles.srt", "w") as f:
-    f.write(srt_content)
-
-# Add to video
-subtitles = SubtitlesClip("subtitles.srt", make_textclip)
-final_video = CompositeVideoClip([final_video, subtitles])
-```
-
-5. **Export Final Video**
-```python
-final_video.write_videofile(
-    "output/demo/final_demo.mp4",
-    codec='libx264',
-    audio_codec='aac',
-    fps=60,
-    bitrate='5000k'
-)
-```
-
-### Output
-```
-output/demo/
-├── final_demo.mp4           # Final video với audio
-├── subtitles.srt            # Subtitle file (if enabled)
-└── metadata.json            # Video metadata
-```
-
-### Quality Settings
-- Video codec: H.264 (libx264)
-- Audio codec: AAC
-- FPS: 60
-- Bitrate: 5000k
-- Resolution: 1920x1080
-
----
-
-## Complete Workflow Example
-
-### CLI Usage
-```bash
-python run_pipeline.py \
-  "Vào google.com và tìm kiếm Python programming" \
-  --name google-search \
-  --voice banmai \
-  --subtitle
-```
-
-### Programmatic Usage
-```python
-import asyncio
-from run_pipeline import run_pipeline
-
-async def main():
-    video_path = await run_pipeline(
-        task="Vào google.com và tìm kiếm Python programming",
-        video_name="google-search",
-        enable_tts=True,
-        tts_voice="banmai",
-        enable_subtitle=True
-    )
-    
-    print(f"✅ Video created: {video_path}")
-
-asyncio.run(main())
-```
-
-### Streamlit UI
-```python
-import streamlit as st
-from run_pipeline import run_pipeline
-
-st.title("🎬 AI Agent Video Tutor")
-
-task = st.text_area("Mô tả tác vụ")
-video_name = st.text_input("Tên video", "demo")
-voice = st.selectbox("Giọng đọc", ["banmai", "leminh", "thuminh"])
-enable_subtitle = st.checkbox("Thêm phụ đề")
-
-if st.button("Tạo video"):
-    with st.spinner("Đang xử lý..."):
-        progress_bar = st.progress(0)
-        
-        # Phase 1: Browser automation
-        st.info("Phase 1: Browser automation...")
-        progress_bar.progress(20)
-        
-        # Phase 2-6: Continue...
-        video_path = await run_pipeline(
-            task=task,
-            video_name=video_name,
-            enable_tts=True,
-            tts_voice=voice,
-            enable_subtitle=enable_subtitle
-        )
-        
-        progress_bar.progress(100)
-        st.success("✅ Hoàn thành!")
-        st.video(video_path)
-```
-
----
-
-## Error Handling Strategy
-
-### Retry Logic
-```python
-async def with_retry(func, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            return await func()
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
-            await asyncio.sleep(2 ** attempt)
-```
-
-### Graceful Degradation
-1. AI review fails → Use original config
-2. TTS fails → Silent video
-3. Subtitle fails → Video without subtitles
-4. Composition fails → Keep raw video
-
-### Logging
-```python
-import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('pipeline.log'),
-        logging.StreamHandler()
-    ]
-)
-
-logger = logging.getLogger(__name__)
-logger.info("Phase 1: Starting browser automation")
-```
+## Error Handling & Recovery
+
+### Gemini API Errors
+
+**Retry Logic:**
+- Max 3 retries với exponential backoff
+- Delay: 2s, 4s, 8s
+- Nếu fail hết → raise RuntimeError → stop pipeline
+
+**Common Errors:**
+- Rate limit: wait and retry
+- Invalid JSON: parse error, retry
+- Network timeout: retry
+- API key invalid: fail immediately
+
+### TTS Errors
+
+**Graceful Degradation:**
+- Nếu 1 segment fail → append None
+- Continue với segments còn lại
+- Final video có audio cho segments thành công
+- Log warning cho segments failed
+
+**Retry:**
+- Max 3 retries per segment
+- Exponential backoff
+- Skip segment nếu fail hết
+
+### FFmpeg Errors
+
+**Recording Errors:**
+- Window not found: fail immediately
+- Encoding error: retry 1 time
+- Disk full: fail with clear message
+
+**Composition Errors:**
+- Invalid audio file: skip segment
+- Filter error: fallback to simpler filter
+- Timeout: kill process, return raw video
+
+### Screenshot Errors
+
+**Capture Errors:**
+- Retry: max 3 times với delay 100ms
+- Fallback: placeholder image
+- Continue pipeline (không fail)
+
+**Placeholder:**
+- Gray background
+- Text: "Screenshot failed at step X"
+- Same size as normal screenshots
+
+### Cancel Handling
+
+**Graceful Cancellation:**
+- Check cancel_event mỗi phase
+- Kill child processes (FFmpeg, node)
+- Cleanup temp files
+- Update UI immediately
+- Return partial results
+
+**Process Killing:**
+- Use psutil to find all children
+- Kill: ffmpeg, ffprobe, node, chrome-headless-shell
+- Skip: python, flet (keep app running)
 
 ---
 
 ## Performance Optimization
 
 ### Parallel Processing
-```python
-import asyncio
 
-# Run TTS segments in parallel
-tasks = [
-    generate_tts(segment["text"], voice, f"segment_{i}.mp3")
-    for i, segment in enumerate(tts_script)
-]
-audio_segments = await asyncio.gather(*tasks)
-```
+**TTS Generation:**
+- Sequential: 2-5s × 5 = 10-25s
+- Parallel (asyncio.gather): 5-10s
+- Improvement: 50-80%
 
-### Caching
-```python
-from functools import lru_cache
+**Document Rendering:**
+- Sequential: 2-3s + 3-5s = 5-8s
+- Parallel (asyncio.gather): 5-7s
+- Improvement: ~15%
 
-@lru_cache(maxsize=100)
-def get_selector(element_hash):
-    # Cache selector extraction
-    return extract_selector(element)
-```
+**Screenshot Capture:**
+- Parallel với video recording
+- No additional time cost
+- Callback-based, non-blocking
 
 ### Resource Management
-```python
-# Cleanup after each phase
-def cleanup():
-    # Close browser
-    await browser.close()
-    
-    # Clear temp files
-    shutil.rmtree("temp/", ignore_errors=True)
-    
-    # Free memory
-    gc.collect()
-```
 
----
+**Memory:**
+- Close pywinauto connections after use
+- Clear screenshot buffers
+- Garbage collect after each phase
 
-## Monitoring & Metrics
+**Disk:**
+- Delete temp files after composition
+- Keep only final outputs
+- Compress screenshots (PNG)
 
-### Track Performance
-```python
-import time
+**CPU:**
+- FFmpeg: use ultrafast preset for recording
+- Use slower preset for final encode (if needed)
+- Limit concurrent jobs (1-2 max)
 
-metrics = {
-    "phase1_duration": 0,
-    "phase2_duration": 0,
-    "phase3_duration": 0,
-    "phase4_duration": 0,
-    "phase5_duration": 0,
-    "phase6_duration": 0,
-    "total_duration": 0
-}
+### Caching
 
-start = time.time()
-# Execute phase
-metrics["phase1_duration"] = time.time() - start
-```
+**UI Element Tree:**
+- Cache pruned tree trong 1 step
+- Reuse nếu window không thay đổi
 
-### Success Rate
-```python
-stats = {
-    "total_videos": 0,
-    "successful": 0,
-    "failed": 0,
-    "success_rate": 0.0
-}
+**Gemini Responses:**
+- No caching (mỗi screenshot unique)
 
-# Update after each run
-stats["total_videos"] += 1
-if success:
-    stats["successful"] += 1
-else:
-    stats["failed"] += 1
-
-stats["success_rate"] = stats["successful"] / stats["total_videos"]
-```
+**Audio Files:**
+- Cache by text hash (future feature)
+- Reuse nếu text giống nhau
 
 ---
 
 ## Best Practices
 
-### 1. Input Validation
-- Validate task description (not empty, reasonable length)
-- Check API keys before starting
-- Verify output directory exists
+### For Users
 
-### 2. Progress Tracking
-- Update progress bar after each phase
-- Show meaningful status messages
-- Estimate time remaining
+**1. Task Description:**
+- Rõ ràng, cụ thể
+- Chia nhỏ task phức tạp
+- Tránh task quá dài (>15 steps)
 
-### 3. Error Messages
-- User-friendly error messages
-- Technical details in logs
-- Suggest solutions when possible
+**2. App State:**
+- Đảm bảo app ở trạng thái sạch
+- Đóng dialogs/popups
+- Không có unsaved changes
 
-### 4. Resource Cleanup
-- Close browser after use
-- Delete temp files
-- Free memory
+**3. Review Narrations:**
+- Đọc kỹ script
+- Sửa lỗi chính tả
+- Đảm bảo ngữ nghĩa đúng
 
-### 5. Testing
-- Unit tests for each module
-- Integration tests for pipeline
-- End-to-end tests with real tasks
+**4. Ready Confirmation:**
+- Kiểm tra app state
+- Undo thủ công nếu cần
+- Đảm bảo window foreground
+
+### For Developers
+
+**1. Error Handling:**
+- Always use try-except
+- Log errors với context
+- Graceful degradation
+- Clear error messages
+
+**2. Testing:**
+- Unit test cho mỗi module
+- Integration test cho pipeline
+- Test với nhiều app types
+- Test cancel functionality
+
+**3. Logging:**
+- Log mỗi phase start/end
+- Log timing metrics
+- Log errors với stack trace
+- Use structured logging
+
+**4. Code Organization:**
+- Separate concerns (planning, recording, composition)
+- Reusable modules
+- Clear interfaces
+- Type hints
+
+---
+
+## Monitoring & Metrics
+
+### Performance Metrics
+
+**Per Phase:**
+- Duration (seconds)
+- Success rate (%)
+- Error count
+- Retry count
+
+**Overall:**
+- Total duration
+- Success rate
+- Most common errors
+- Average steps per video
+
+### Quality Metrics
+
+**Video:**
+- Resolution
+- FPS
+- File size
+- Encoding time
+
+**Audio:**
+- Sync accuracy (ms)
+- Volume levels
+- Segment count
+- Failed segments
+
+**Documents:**
+- Page count
+- Screenshot count
+- File size
+- Generation time
+
+### User Metrics
+
+**Usage:**
+- Videos created per day
+- Most used app types
+- Average task length
+- Cancel rate
+
+**Satisfaction:**
+- Review edit rate
+- Retry rate
+- Delete rate
+- Feedback scores
 
 ---
 
 ## Kết luận
 
 Workflow được thiết kế để:
-- Tự động hóa tối đa
-- Xử lý lỗi gracefully
-- Tối ưu performance
-- Dễ maintain và extend
 
-Mỗi phase độc lập, có thể test riêng và thay thế nếu cần.
+1. **Tự động hóa tối đa**: Agent tự dò đường, không cần user can thiệp
+2. **Chính xác cao**: Trace-driven audio sync, exact timestamps
+3. **Linh hoạt**: Hỗ trợ nhiều app types, graceful degradation
+4. **User-friendly**: Review UI, ready confirmation, cancel support
+5. **Hiệu quả**: Parallel processing, resource optimization
+6. **Mở rộng dễ**: Modular design, clear interfaces
+
+Mỗi phase độc lập, có thể test riêng và thay thế nếu cần. Pipeline có thể chạy CLI hoặc Desktop UI, phù hợp với nhiều use cases.

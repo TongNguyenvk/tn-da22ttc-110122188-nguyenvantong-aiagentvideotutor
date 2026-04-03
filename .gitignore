@@ -31,6 +31,7 @@ videos/
 webreel-ai-agent/output/
 webreel-ai-agent/browser-use/
 *.mp4
+!demo_videos/*.mp4
 *.webm
 *.gif
 *.png
