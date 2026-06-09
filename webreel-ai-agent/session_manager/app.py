@@ -11,6 +11,8 @@ import signal
 import logging
 import asyncio
 from pathlib import Path
+import shutil
+import glob
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,20 +24,31 @@ ARCHIVE_PATH = "/app/chrome_master/master_profile.tar.gz"
 
 
 def find_chrome_processes():
-    """Find Chrome/Chromium processes."""
+    """Find active Chrome/Chromium processes (excluding zombies)."""
     try:
         result = subprocess.run(
-            ["pgrep", "-f", "chrome|chromium"],
+            ["ps", "-eo", "pid,state,args"],
             capture_output=True,
             text=True
         )
-        pids = result.stdout.strip().split("\n") if result.stdout.strip() else []
-        return [p for p in pids if p]
-    except Exception:
+        if result.returncode != 0:
+            return []
+            
+        pids = []
+        for line in result.stdout.strip().split("\n")[1:]:
+            parts = line.strip().split(None, 2)
+            if len(parts) >= 3:
+                pid, state, cmd = parts[0], parts[1], parts[2]
+                # Bo qua cac tien trinh Zombie (Z)
+                if ("chrome" in cmd or "chromium" in cmd) and state != 'Z':
+                    pids.append(pid)
+        return pids
+    except Exception as e:
+        logger.error(f"Error finding Chrome processes: {e}")
         return []
 
 
-def graceful_shutdown_chrome(max_wait: int = 45):
+async def graceful_shutdown_chrome(max_wait: int = 10):
     """
     Gracefully shutdown Chrome processes.
     Returns True if all processes stopped, False if timeout.
@@ -60,7 +73,7 @@ def graceful_shutdown_chrome(max_wait: int = 45):
     
     # Wait for processes to exit gracefully
     for i in range(max_wait):
-        time.sleep(1)
+        await asyncio.sleep(1)
         remaining = find_chrome_processes()
         if not remaining:
             logger.info("All Chrome processes stopped gracefully")
@@ -77,7 +90,7 @@ def graceful_shutdown_chrome(max_wait: int = 45):
                 logger.info(f"Force killed Chrome PID {pid}")
             except Exception:
                 pass
-        time.sleep(2)  # Wait for force kill to take effect
+        await asyncio.sleep(2)  # Wait for force kill to take effect
     
     final_check = find_chrome_processes()
     if final_check:
@@ -85,6 +98,57 @@ def graceful_shutdown_chrome(max_wait: int = 45):
         return False
     
     return True
+
+
+def start_chrome():
+    """Start Chrome process after freezing."""
+    chrome_bin = None
+    if shutil.which("google-chrome"):
+        chrome_bin = "google-chrome"
+    else:
+        paths = glob.glob("/opt/pw-browsers/chromium-*/chrome-linux64/chrome")
+        if not paths:
+            paths = glob.glob("/opt/pw-browsers/chromium-*/chrome-linux/chrome")
+        if paths:
+            chrome_bin = paths[0]
+        elif shutil.which("chromium-browser"):
+            chrome_bin = "chromium-browser"
+            
+    if not chrome_bin:
+        logger.error("Chrome binary not found")
+        return False
+        
+    cmd = [
+        chrome_bin,
+        "--display=:99",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--remote-debugging-port=9221",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-allow-origins=*",
+        "--window-size=1280,800",
+        "--window-position=0,0",
+        "--disable-dev-shm-usage",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-sync",
+        "--disable-translate",
+        "--start-maximized",
+        "--home-page", "https://www.office.com",
+        f"--user-data-dir={CHROME_PROFILE_DIR}"
+    ]
+    
+    logger.info(f"Starting Chrome again: {cmd}")
+    try:
+        # Chạy background và redirect stdout/stderr giống shell script
+        with open("/tmp/chrome.log", "a") as log_file:
+            subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
+        logger.info("Chrome started successfully from API")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to start Chrome from API: {e}")
+        return False
 
 
 def create_archive():
@@ -100,9 +164,13 @@ def create_archive():
         archive_path.unlink()
         logger.info(f"Removed existing archive: {archive_path}")
     
-    # Create new archive (exclude .tar.gz itself)
+    # Create new archive in /tmp first to avoid "file changed as we read it"
+    tmp_archive = Path("/tmp/master_profile.tar.gz")
+    if tmp_archive.exists():
+        tmp_archive.unlink()
+        
     cmd = [
-        "tar", "-czf", str(archive_path),
+        "tar", "-czf", str(tmp_archive),
         "-C", str(profile_dir.parent),
         "chrome_master"
     ]
@@ -112,10 +180,14 @@ def create_archive():
     
     if result.returncode != 0:
         raise Exception(f"Archive creation failed: {result.stderr}")
+        
+    # Move to final location
+    import shutil
+    shutil.move(str(tmp_archive), str(archive_path))
     
     # Get archive size
     size = archive_path.stat().st_size
-    logger.info(f"Archive created: {archive_path} ({size / 1024 / 1024:.2f} MB)")
+    logger.info(f"Archive created and moved: {archive_path} ({size / 1024 / 1024:.2f} MB)")
     
     return {
         "archive_path": str(archive_path),
@@ -135,7 +207,7 @@ async def freeze_session():
     logger.info("Received freeze request")
     
     # Step 1: Graceful shutdown
-    if not graceful_shutdown_chrome(max_wait=30):
+    if not await graceful_shutdown_chrome(max_wait=10):
         raise HTTPException(
             status_code=500,
             detail="Failed to shutdown Chrome gracefully"
@@ -149,10 +221,13 @@ async def freeze_session():
         archive_info = create_archive()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+        
+    # Step 3: Start Chrome again so user doesn't lose the VNC screen
+    start_chrome()
     
     return {
         "status": "success",
-        "message": "Session frozen and archived",
+        "message": "Session frozen, archived and restarted",
         "archive": archive_info
     }
 

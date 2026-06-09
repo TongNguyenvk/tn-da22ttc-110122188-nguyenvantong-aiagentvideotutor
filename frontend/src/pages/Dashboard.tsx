@@ -30,7 +30,7 @@ import {
   fetchVideos,
   getJobDetail,
   getVideoDownloadUrl,
-  getVideoPreviewUrl,
+  getVideoViewUrl,
 } from "@/lib/api";
 import type { JobDetail } from "@/lib/api";
 import { useState, useCallback } from "react";
@@ -336,9 +336,13 @@ export function Dashboard() {
                                   variant="outline"
                                   size="sm"
                                   className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20"
-                                  onClick={() => {
-                                    const url = getVideoPreviewUrl(video.video_url);
-                                    if (url) window.open(url, "_blank");
+                                  onClick={async () => {
+                                    try {
+                                      const url = await getVideoViewUrl(String(video.id));
+                                      window.open(url, "_blank", "noopener,noreferrer");
+                                    } catch (e) {
+                                      toast.error((e as Error).message);
+                                    }
                                   }}
                                 >
                                   <Eye className="w-4 h-4 mr-1" />

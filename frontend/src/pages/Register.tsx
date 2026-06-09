@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { GoogleLogin, CredentialResponse } from "@react-oauth/google";
 import {
   Card,
   CardContent,
@@ -11,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2, Video } from "lucide-react";
+import { Loader2, Video, Mail } from "lucide-react";
 import { toast } from "sonner";
 
 export function Register() {
@@ -20,7 +21,9 @@ export function Register() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const { register } = useAuth();
+  const [isSuccess, setIsSuccess] = useState(false);
+  const { register, loginWithGoogle } = useAuth();
+  const navigate = useNavigate();
 
   const validatePassword = (pwd: string): string | null => {
     if (pwd.length < 8) {
@@ -54,12 +57,64 @@ export function Register() {
 
     try {
       await register(email, password, name);
+      setIsSuccess(true);
     } catch (error) {
       // Error handled in AuthContext
     } finally {
       setIsLoading(false);
     }
   };
+
+  const handleGoogleSuccess = async (response: CredentialResponse) => {
+    if (!response.credential) return;
+    setIsLoading(true);
+    try {
+      await loginWithGoogle(response.credential);
+    } catch (error) {
+      // Error handled in AuthContext
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (isSuccess) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <div className="w-full max-w-md space-y-8">
+          <div className="text-center">
+            <div className="flex items-center justify-center gap-2 mb-4">
+              <Video className="w-10 h-10 text-primary" />
+              <h1 className="text-4xl font-bold tracking-tight">WebReel</h1>
+            </div>
+          </div>
+
+          <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-black/40 dark:backdrop-blur-xl">
+            <CardHeader className="text-center">
+              <div className="flex justify-center mb-4 text-primary">
+                <Mail className="w-16 h-16 animate-bounce" />
+              </div>
+              <CardTitle className="text-gray-900 dark:text-white">
+                Kiểm tra email của bạn
+              </CardTitle>
+              <CardDescription>
+                Chúng tôi đã gửi một liên kết xác thực tài khoản đến email{" "}
+                <strong>{email}</strong>.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 text-center">
+              <p className="text-sm text-muted-foreground">
+                Vui lòng kiểm tra hộp thư (và cả hộp thư rác/spam) và nhấp vào liên kết để
+                kích hoạt tài khoản.
+              </p>
+              <Button onClick={() => navigate("/login")} className="w-full">
+                Quay lại đăng nhập
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -78,6 +133,32 @@ export function Register() {
             <CardDescription>Điền thông tin để tạo tài khoản</CardDescription>
           </CardHeader>
           <CardContent>
+            {/* Google Sign-In button */}
+            <div className="flex justify-center mb-4">
+              <GoogleLogin
+                onSuccess={handleGoogleSuccess}
+                onError={() => {
+                  // Silently handle - user cancelled or popup blocked
+                }}
+                theme="outline"
+                size="large"
+                text="signup_with"
+                shape="rectangular"
+              />
+            </div>
+
+            {/* Divider */}
+            <div className="relative my-4">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t border-gray-200 dark:border-white/10" />
+              </div>
+              <div className="relative flex justify-center text-xs uppercase">
+                <span className="bg-white dark:bg-black/40 px-2 text-muted-foreground">
+                  hoặc
+                </span>
+              </div>
+            </div>
+
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="name" className="text-gray-700 dark:text-gray-300">
@@ -86,7 +167,7 @@ export function Register() {
                 <Input
                   id="name"
                   type="text"
-                  placeholder="Nguyễn Văn A"
+                  placeholder="Nguyen Van A"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
@@ -116,7 +197,7 @@ export function Register() {
                 <Input
                   id="password"
                   type="password"
-                  placeholder="••••••••"
+                  placeholder="--------"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
@@ -138,7 +219,7 @@ export function Register() {
                 <Input
                   id="confirmPassword"
                   type="password"
-                  placeholder="••••••••"
+                  placeholder="--------"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   required

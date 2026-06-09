@@ -16,7 +16,9 @@ class JobConfig(BaseModel):
     tts_voice: str = "banmai"
     tts_engine: Literal["fpt", "edge"] = "fpt"
     cdp_url: str = "http://localhost:9222"
-    padding_ms: int = 300
+    # 1000ms (default) cho moi truong Docker: bu jitter capture loop + cushion
+    # giua narration ket thuc va ArrowRight ke tiep. Co the override per-job.
+    padding_ms: int = 1000
     enable_review: bool = False
     
     # OS Worker specific config (V3 - backward compatible)

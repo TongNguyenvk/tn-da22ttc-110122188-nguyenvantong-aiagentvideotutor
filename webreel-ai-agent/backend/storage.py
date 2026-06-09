@@ -206,16 +206,16 @@ class R2Storage:
     async def delete_file(self, r2_key: str) -> bool:
         """
         Delete file from R2.
-        
+
         Args:
             r2_key: R2 object key
-            
+
         Returns:
             bool: Success status
         """
         if not self.is_enabled():
             return False
-        
+
         try:
             self.client.delete_object(Bucket=self.bucket, Key=r2_key)
             logger.info(f"File deleted from R2: {r2_key}")
@@ -223,6 +223,70 @@ class R2Storage:
         except Exception as e:
             logger.error(f"Failed to delete file from R2: {e}")
             return False
+
+    @staticmethod
+    def derive_r2_key_from_url(url: Optional[str]) -> Optional[str]:
+        """Recover the R2 object key from a stored CDN URL.
+
+        Old jobs only have `result.video_url` (the permanent public URL
+        we used to write). To sign on demand we need the key — strip
+        whichever prefix matches our R2 setup:
+
+          - `<R2_PUBLIC_URL>/<key>`             custom CDN domain
+          - `<R2_ENDPOINT>/<bucket>/<key>`      direct S3 endpoint
+
+        Returns None if the URL is empty, relative, or doesn't match
+        either prefix (e.g. a local FileResponse path).
+        """
+        if not url or not url.startswith("http"):
+            return None
+
+        if R2_PUBLIC_URL and url.startswith(R2_PUBLIC_URL + "/"):
+            return url[len(R2_PUBLIC_URL) + 1 :]
+
+        if R2_ENDPOINT:
+            endpoint_bucket = f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/"
+            if url.startswith(endpoint_bucket):
+                return url[len(endpoint_bucket) :]
+
+        return None
+
+    def generate_presigned_url(
+        self, r2_key: str, expires_in: int = 600, inline: bool = True
+    ) -> Optional[str]:
+        """Return a short-lived signed GET URL for an R2 object.
+
+        This is what the admin UI / owner Dashboard hits when the user
+        clicks "Xem". The URL embeds an HMAC of (bucket, key, expiry)
+        signed with R2_SECRET_KEY, so anyone with the link can stream
+        the video for `expires_in` seconds — but after expiry the same
+        URL returns 403 from R2. This replaces the previous behaviour
+        of storing a permanent public CDN URL on the job record.
+
+        Args:
+            r2_key: the R2 object key (e.g. "videos/<job_id>_foo.mp4")
+            expires_in: TTL in seconds (default 10 min — long enough to
+                start playback, short enough that a leaked URL stops
+                working before the user finishes a coffee)
+            inline: True → Content-Disposition: inline (browser <video>
+                streams); False → attachment (force download).
+        """
+        if not self.is_enabled():
+            return None
+        try:
+            params = {"Bucket": self.bucket, "Key": r2_key}
+            if inline:
+                # Override the per-object Content-Disposition R2 returns
+                # so the browser plays in-place instead of downloading.
+                params["ResponseContentDisposition"] = "inline"
+            return self.client.generate_presigned_url(
+                ClientMethod="get_object",
+                Params=params,
+                ExpiresIn=expires_in,
+            )
+        except Exception as e:
+            logger.error(f"Failed to sign URL for {r2_key}: {e}")
+            return None
     
     @staticmethod
     def _get_content_type(path: Path) -> str:

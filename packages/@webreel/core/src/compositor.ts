@@ -189,9 +189,34 @@ async function compositeFrames(
   const stdin = ffmpeg.stdin;
   if (!stdin) throw new Error("ffmpeg process has no stdin pipe");
 
+  // Capture stderr from the start so we can surface failures even if ffmpeg
+  // dies during the input phase (e.g., raw video has no moov atom).
+  const stderrChunks: Buffer[] = [];
+  ffmpeg.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+
+  // Track ffmpeg exit early; if it dies mid-write we want to short-circuit
+  // the write loop with a real error instead of crashing on EPIPE.
+  let ffmpegExited: { code: number | null } | null = null;
+  let ffmpegError: Error | null = null;
+  ffmpeg.on("close", (code) => {
+    ffmpegExited = { code };
+  });
+  ffmpeg.on("error", (err) => {
+    ffmpegError = err;
+  });
+
+  // Without this listener, a dead ffmpeg would emit 'error' on stdin with no
+  // listeners and crash the Node process with `write EPIPE`. We capture it
+  // and let the explicit ffmpeg-exit check below produce a clean error.
+  stdin.on("error", () => {
+    /* swallowed; surfaced via ffmpegExited / ffmpegError */
+  });
+
   const drain = (): Promise<void> => new Promise((res) => stdin.once("drain", res));
 
   for (let i = 0; i < timeline.frames.length; i++) {
+    if (ffmpegExited || ffmpegError) break;
+
     const frame = timeline.frames[i];
     const overlayPng = await renderOverlayFrame(
       frame,
@@ -202,29 +227,38 @@ async function compositeFrames(
       hudCache,
     );
 
+    if (ffmpegExited || ffmpegError) break;
+
     const ok = stdin.write(overlayPng);
     if (!ok) await drain();
   }
 
-  stdin.end();
-
-  const stderrChunks: Buffer[] = [];
-  ffmpeg.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  try {
+    stdin.end();
+  } catch {
+    /* ignore: ffmpeg may have already exited */
+  }
 
   await new Promise<void>((resolveAll, rejectAll) => {
+    const fail = (msg: string) => {
+      const stderr = Buffer.concat(stderrChunks).toString().slice(-2000);
+      rejectAll(new Error(`${msg}${stderr ? `:\n${stderr}` : ""}`));
+    };
+    if (ffmpegError) {
+      fail(`Compositor ffmpeg failed: ${ffmpegError.message}`);
+      return;
+    }
+    if (ffmpegExited) {
+      const code = ffmpegExited.code;
+      if (code === 0) resolveAll();
+      else fail(`Compositor ffmpeg exited with code ${code}`);
+      return;
+    }
     ffmpeg.on("close", (code) => {
-      if (code === 0) {
-        resolveAll();
-      } else {
-        const stderr = Buffer.concat(stderrChunks).toString().slice(-2000);
-        rejectAll(
-          new Error(
-            `Compositor ffmpeg exited with code ${code}${stderr ? `:\n${stderr}` : ""}`,
-          ),
-        );
-      }
+      if (code === 0) resolveAll();
+      else fail(`Compositor ffmpeg exited with code ${code}`);
     });
-    ffmpeg.on("error", rejectAll);
+    ffmpeg.on("error", (err) => fail(`Compositor ffmpeg error: ${err.message}`));
   });
 }
 

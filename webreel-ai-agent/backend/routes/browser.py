@@ -146,19 +146,18 @@ async def update_browser_session(
 async def get_vnc_urls(current_user = Depends(get_current_admin)):
     """
     Get noVNC URLs for all workers.
-    Returns URLs that can be embedded in iframe.
+    Returns relative paths served via Nginx reverse proxy at /novnc/.
+    No SSH tunnel required.
     """
-    # In production, these should be proxied through the API server
-    # For now, return localhost URLs (admin must have SSH tunnel)
     return {
         "web": {
-            "url": "http://localhost:6080/vnc.html?autoconnect=true&resize=scale",
+            "url": "/novnc/vnc.html?autoconnect=true&resize=scale",
             "port": 6080,
             "worker": "web-worker"
         },
         "presentation": {
-            "url": "http://localhost:6081/vnc.html?autoconnect=true&resize=scale",
-            "port": 6081,
+            "url": "/novnc/vnc.html?autoconnect=true&resize=scale",
+            "port": 6080,
             "worker": "presentation-worker"
         }
     }

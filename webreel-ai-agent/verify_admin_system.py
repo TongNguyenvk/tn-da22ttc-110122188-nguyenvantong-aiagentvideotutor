@@ -8,7 +8,7 @@ import requests
 import subprocess
 import json
 
-API_BASE = "http://localhost:8000"
+API_BASE = "http://localhost:3000"
 
 def check_backend():
     """Check if backend is running."""
@@ -95,7 +95,7 @@ def test_admin_login():
     try:
         response = requests.post(
             f"{API_BASE}/api/auth/login",
-            json={"email": "admin@webreel.com", "password": "admin123"},
+            json={"email": "admin@webreel.com", "password": "admin@123"},
             timeout=5
         )
         

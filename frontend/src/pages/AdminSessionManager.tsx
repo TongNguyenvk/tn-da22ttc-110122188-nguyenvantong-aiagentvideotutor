@@ -29,7 +29,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const NOVNC_URL = import.meta.env.VITE_NOVNC_URL || "http://localhost:6080/vnc.html";
+const NOVNC_URL =
+  import.meta.env.VITE_NOVNC_URL || "/novnc/vnc.html?autoconnect=true&resize=scale";
 
 // Tên hiển thị thân thiện cho từng queue
 const QUEUE_LABELS: Record<string, string> = {

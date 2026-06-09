@@ -5,6 +5,7 @@ Su dung mss de chup man hinh vung cua so va google-genai de goi AI.
 
 import json
 import logging
+import os
 from pathlib import Path
 from enum import Enum
 
@@ -157,7 +158,7 @@ def generate_action_plan(image_path: str, user_prompt: str) -> list[dict]:
     )
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
         contents=[
             {
                 "role": "user",

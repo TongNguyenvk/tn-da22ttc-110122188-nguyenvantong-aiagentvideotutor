@@ -86,3 +86,13 @@ build_error*.log
 
 # Docker
 .dockerignore
+
+# Local dev tools / personal scripts (not part of the project)
+claude-code.bat
+test_compose.js
+
+# baocao/ scratch logs (keep markdown reports, drop transient files)
+baocao/**/ffmpeg_tmp/
+baocao/**/log.txt
+baocao/**/pids.txt
+*.m4a

@@ -106,25 +106,26 @@ async def get_novnc_url():
     """
     Get noVNC URL for embedded iframe.
     
+    Returns relative path so the iframe loads through Nginx reverse proxy
+    at /novnc/ without needing SSH tunnel or direct port access.
+    
     Returns:
-        url: noVNC URL
+        url: noVNC relative path (served via Nginx proxy)
         instructions: Step-by-step login instructions
     """
-    # noVNC is exposed on localhost only (security)
-    # Admin must SSH tunnel to access
-    novnc_port = os.getenv("NOVNC_PORT", "6080")
+    # noVNC is proxied through Nginx at /novnc/ (see nginx.conf).
+    # No SSH tunnel needed; the admin accesses it directly via the
+    # same origin as the frontend (e.g. https://domain.com/novnc/).
     
     return {
-        "url": f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&resize=scale",
+        "url": "/novnc/vnc.html?autoconnect=true&resize=scale",
         "instructions": [
-            "1. SSH tunnel to VPS: ssh -L 6080:localhost:6080 user@vps-ip",
-            "2. Open the URL above in your browser",
-            "3. Navigate to https://onedrive.live.com in the VNC browser",
-            "4. Login with your Microsoft account",
-            "5. IMPORTANT: Tick 'Keep me signed in' checkbox",
-            "6. After login, close this window and verify cookies"
-        ],
-        "ssh_command": f"ssh -L {novnc_port}:localhost:{novnc_port} user@your-vps-ip"
+            "1. Click 'Login to OneDrive' to open the VNC window below",
+            "2. In the VNC browser, navigate to https://onedrive.live.com",
+            "3. Login with your Microsoft account",
+            "4. IMPORTANT: Tick 'Keep me signed in' checkbox",
+            "5. After login, click 'Verify Login' button above"
+        ]
     }
 
 @router.post("/verify-cookies")

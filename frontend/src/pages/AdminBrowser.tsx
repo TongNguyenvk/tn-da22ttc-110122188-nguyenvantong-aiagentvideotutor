@@ -141,11 +141,8 @@ export function AdminBrowser() {
             <div className="space-y-4">
               <div className="bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 rounded-lg p-4">
                 <p className="text-sm text-blue-800 dark:text-blue-200">
-                  <strong>Lưu ý:</strong> Bạn cần có SSH tunnel để truy cập noVNC:
-                  <code className="block mt-2 bg-white dark:bg-black/50 p-2 rounded text-xs font-mono">
-                    ssh -L {selectedWorker === "web" ? "6080" : "6081"}:localhost:
-                    {selectedWorker === "web" ? "6080" : "6081"} user@vps-ip
-                  </code>
+                  <strong>Note:</strong> noVNC is served through the Nginx reverse proxy
+                  at /novnc/. No SSH tunnel required.
                 </p>
               </div>
 

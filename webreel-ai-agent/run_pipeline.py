@@ -137,12 +137,10 @@ async def phase1_scout(task: str, cdp_url: str) -> dict:
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY not found in .env")
-
     llm = ChatGoogle(
-        model="gemini-3.1-flash-lite-preview",
+        model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
         api_key=api_key,
     )
-
     # Custom action: save_narration
     controller = Controller()
 

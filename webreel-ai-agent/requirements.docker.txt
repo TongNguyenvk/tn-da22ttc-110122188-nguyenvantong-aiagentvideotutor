@@ -28,7 +28,12 @@ botocore>=1.34.0
 # Authentication
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
-bcrypt==4.2.0
+bcrypt>=4.0.0,<4.1.0
+google-auth>=2.0.0
+# OAuth web flow for admin "Login with Google" button (Google Drive token).
+# Workers don't need this — only the API generates auth URLs and exchanges
+# codes. Worker keeps using the saved pickle.
+google-auth-oauthlib>=1.2.0
 
 # Browser automation (CDP-based, connects to Browserless Chrome)
 browser-use>=0.12.0

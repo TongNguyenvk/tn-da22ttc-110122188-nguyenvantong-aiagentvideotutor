@@ -221,7 +221,7 @@ class OSPlanningAgent:
         user_task: str,
         max_steps: int = 15,
         output_dir: str = "workspace",
-        model: str = "gemini-3.1-flash-lite-preview",
+        model: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
     ):
         self.pid = pid
         self.user_task = user_task

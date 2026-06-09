@@ -143,6 +143,17 @@ async def process_job(job: dict) -> dict:
     logger.info(f"Processing Google Presentation Job {job_id} for file {pptx_path}")
 
     try:
+        # 0. Convert legacy .ppt to .pptx if necessary
+        if pptx_path.lower().endswith('.ppt'):
+            logger.info("Detected legacy .ppt file. Converting to .pptx using LibreOffice...")
+            out_dir = os.path.dirname(pptx_path)
+            cmd = ["soffice", "--headless", "--convert-to", "pptx", pptx_path, "--outdir", out_dir]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                raise RuntimeError(f"Failed to convert .ppt to .pptx: {res.stderr}")
+            pptx_path = pptx_path + "x"
+            logger.info(f"Conversion successful. New path: {pptx_path}")
+
         from shared.google_drive_oauth import upload_to_gdrive_oauth, delete_from_gdrive_oauth
         
         # 1. Upload to Google Drive and convert to Google Slides
@@ -164,33 +175,96 @@ async def process_job(job: dict) -> dict:
         
         num_slides = len(slides)
         
-        # Build prompt optimized for Google Slides presentation mode
-        task_prompt = f"Present a Google Slides presentation with {num_slides} slides:\n\n"
-        task_prompt += f"CRITICAL: The URL below opens DIRECTLY in presentation mode (full-screen slideshow).\n"
-        task_prompt += f"DO NOT click any buttons. The slideshow starts automatically.\n\n"
-        task_prompt += f"1. Navigate to: {presentation_url}\n"
-        task_prompt += f"2. Wait 8 seconds for the first slide to fully load in presentation mode.\n"
-        task_prompt += f"3. For each of the {num_slides} slides:\n"
-        task_prompt += f"   - Call save_narration with a brief, engaging explanation of the slide (2-3 sentences)\n"
-        task_prompt += f"   - Press ArrowRight ONCE to advance to the next slide\n"
-        task_prompt += f"   - Wait 2 seconds for the next slide to load\n"
-        task_prompt += f"4. After narrating the LAST slide (slide {num_slides}), call done immediately.\n\n"
-        task_prompt += f"KEYBOARD SHORTCUTS (Google Slides Presentation Mode):\n"
-        task_prompt += f"- ArrowRight or Space: Next slide\n"
-        task_prompt += f"- ArrowLeft: Previous slide\n"
-        task_prompt += f"- Escape: Exit presentation mode (DO NOT use unless instructed)\n\n"
-        task_prompt += f"CRITICAL RULES:\n"
-        task_prompt += f"- NEVER click anything - use ONLY keyboard shortcuts\n"
-        task_prompt += f"- Press ArrowRight exactly ONCE per slide\n"
-        task_prompt += f"- Keep narrations SHORT and ENGAGING (2-3 sentences max)\n"
-        task_prompt += f"- After slide {num_slides}, call done IMMEDIATELY (do not repeat or summarize)\n\n"
-        task_prompt += f"Slide titles for reference:\n"
-        
+        # Build prompt optimized for Google Slides presentation mode.
+        # English instructions (Gemini tokenises Vietnamese ~2.5x denser),
+        # Vietnamese examples + slide titles where needed. Output (narrations
+        # via save_narration) MUST be Vietnamese — that's the only thing the
+        # learner ever hears.
+        task_prompt = (
+            f"You are a Vietnamese UNIVERSITY LECTURER recording a video "
+            f"lecture from a {num_slides}-slide Google Slides deck.\n\n"
+        )
+
+        task_prompt += "=== TASK ===\n"
+        task_prompt += (
+            "For each slide: READ on-screen content (title + bullets + any visible "
+            "notes), write a natural lecture-style narration (in Vietnamese), call "
+            "`save_narration` to store it, then press ArrowRight to advance.\n\n"
+        )
+
+        task_prompt += "=== NAVIGATION ===\n"
+        task_prompt += f"1. Open URL: {presentation_url}\n"
+        task_prompt += "   This URL opens DIRECTLY in full-screen presentation mode — do NOT click anything to start.\n"
+        task_prompt += "2. Wait 15s for slide 1 to load.\n"
+        task_prompt += f"3. Loop for {num_slides} slides:\n"
+        task_prompt += "   - Slide 1 (already on screen): READ content → call `save_narration` IMMEDIATELY (no keypress before).\n"
+        task_prompt += "   - Then: press ArrowRight → wait 3s → READ new slide → call `save_narration` → repeat.\n"
+        task_prompt += f"4. After the LAST slide ({num_slides}), call `save_narration` with a closing remark, then call `done` immediately.\n\n"
+
+        task_prompt += "=== KEYS ===\n"
+        task_prompt += "- ArrowRight or Space: next slide\n"
+        task_prompt += "- NEVER click the mouse, NEVER click the slide, NEVER press Escape.\n"
+        task_prompt += "- Exactly ONE ArrowRight per slide.\n\n"
+
+        task_prompt += "=== LECTURE STYLE (MOST IMPORTANT) ===\n"
+        task_prompt += (
+            "This is a LECTURE VIDEO, not slide-reading. The audience is STUDENTS "
+            "learning the material for the first time. Every narration must:\n\n"
+        )
+        task_prompt += (
+            "1. **Academic but warm**: use 'chúng ta' (we), 'các bạn' (you all). "
+            "Avoid robotic phrasing like 'Slide này cho thấy...' (this slide shows). "
+            "Use openings like 'Chúng ta sẽ cùng tìm hiểu...', 'Điểm mấu chốt ở đây là...', "
+            "'Các bạn có thể hình dung...'.\n\n"
+        )
+        task_prompt += (
+            "2. **Explain, do NOT recite**: if the slide says 'A is B', do not just "
+            "repeat it — explain WHY A is B, or what the concept MEANS. Translate "
+            "abstract concepts into everyday language.\n\n"
+        )
+        task_prompt += (
+            "3. **Illustrative example WHEN USEFUL** (not every slide): if the slide "
+            "presents an abstract concept, definition, or principle, add ONE short "
+            "example sentence even if the slide doesn't show one. Examples should be "
+            "relatable to Vietnamese students (school life, daily life, common "
+            "technology). If the slide ALREADY has a concrete example, chart, or "
+            "data — skip the extra example, just guide the audience through it.\n\n"
+        )
+        task_prompt += (
+            "4. **Smooth transitions**: from slide 2 onwards, open with a short "
+            "bridging phrase referencing the previous slide ('Sau khi đã hiểu... "
+            "bây giờ chúng ta sẽ...', 'Tiếp nối ý vừa rồi...'). The final slide "
+            "ends with a summary or a teaser for what comes next.\n\n"
+        )
+        task_prompt += (
+            "5. **First slide**: start with a brief greeting + topic intro "
+            "('Xin chào các bạn. Hôm nay chúng ta sẽ cùng tìm hiểu về...').\n\n"
+        )
+
+        task_prompt += "=== LENGTH & LANGUAGE ===\n"
+        task_prompt += "- 4-7 sentences per slide. Long enough to teach, short enough to keep pace.\n"
+        task_prompt += "- Section divider / title-only slides can be shorter (2-3 sentences).\n"
+        task_prompt += (
+            "- Output language: VIETNAMESE WITH FULL DIACRITICS. Missing diacritics = "
+            "serious error. Example: 'Bài học' (correct), 'Bai hoc' (WRONG).\n"
+        )
+        task_prompt += "- No emoji, no markdown, no bullet lists — write complete sentences so TTS sounds natural.\n"
+        task_prompt += (
+            "- Acronyms: expand on first mention, then introduce the abbreviation "
+            "('Work Breakdown Structure, viết tắt là WBS').\n\n"
+        )
+
+        task_prompt += "=== SLIDE TITLES (CONTEXT) ===\n"
         for idx, slide in enumerate(slides):
-            first_line = slide.texts[0] if slide.texts else f"Slide {idx+1}"
+            first_line = slide.texts[0] if slide.texts else f"Slide {idx + 1}"
             if len(first_line) > 80:
                 first_line = first_line[:77] + "..."
-            task_prompt += f"   {idx+1}. {first_line}\n"
+            task_prompt += f"   {idx + 1}. {first_line}\n"
+        task_prompt += (
+            "\nNote: titles above are pre-extracted context only. When narrating, "
+            "READ the actual on-screen content (slides may have bullets/notes not "
+            "in this list) and base your narration on what's VISIBLE.\n"
+        )
         
         logger.info(f"Generated Google Slides task prompt:\n{task_prompt}")
         
@@ -230,7 +304,7 @@ async def process_job(job: dict) -> dict:
                 enable_tts=config.get("enable_tts", True),
                 tts_voice=config.get("tts_voice", "banmai"),
                 tts_engine=config.get("tts_engine", "edge"),
-                padding_ms=config.get("padding_ms", 300),
+                padding_ms=int(os.getenv("PADDING_MS") or config.get("padding_ms") or 1000),
                 enable_review=config.get("enable_review", True),
                 job_id=job_id,
                 agent_mode="presentation_gg",

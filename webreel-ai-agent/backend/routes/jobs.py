@@ -54,17 +54,38 @@ async def list_my_jobs(
         status=status,
         limit=limit
     )
-    
-    # Convert ObjectId to string for JSON serialization
+
+    # Convert ObjectId to string + strip any leaked direct R2 URLs.
+    # The owner-only /view endpoint mints fresh signed URLs on demand,
+    # so the client never needs (and must not see) the permanent CDN URL.
     for job in jobs:
         if "_id" in job:
             job["_id"] = str(job["_id"])
-    
+        _scrub_video_url(job)
+
     return {
         "jobs": jobs,
         "total": len(jobs),
         "user_id": user["user_id"]
     }
+
+
+def _scrub_video_url(job: dict) -> None:
+    """Drop R2 CDN URLs from a job dict before sending it to the client.
+
+    `result.video_url` historically held a permanent public R2 URL —
+    knowing the URL was enough to fetch the video. The new model uses
+    short-lived signed URLs minted by /view, so we replace `video_url`
+    with a boolean-ish marker that just tells the frontend whether a
+    video exists, without leaking how to reach it.
+    """
+    result = job.get("result")
+    if not isinstance(result, dict):
+        return
+    raw_url = result.get("video_url")
+    if raw_url:
+        result["video_url"] = f"/api/jobs/{job.get('job_id')}/view"
+        result["has_video"] = True
 
 
 @router.get("/{job_id}")
@@ -99,7 +120,8 @@ async def get_my_job(
     # Convert ObjectId to string
     if "_id" in job:
         job["_id"] = str(job["_id"])
-    
+    _scrub_video_url(job)
+
     return job
 
 

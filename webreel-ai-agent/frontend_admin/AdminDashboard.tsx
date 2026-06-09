@@ -255,10 +255,8 @@ export default function AdminDashboard() {
             </div>
 
             <p className="text-sm text-gray-500 mt-2">
-              💡 Tip: If iframe doesn't load, make sure you have SSH tunnel active:
-              <code className="block bg-gray-100 p-2 mt-1 rounded">
-                ssh -L 6080:localhost:6080 user@your-vps-ip
-              </code>
+              noVNC is served through the Nginx reverse proxy at /novnc/. No SSH tunnel
+              required.
             </p>
           </div>
         )}

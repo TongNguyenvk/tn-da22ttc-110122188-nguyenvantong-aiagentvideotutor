@@ -23,6 +23,7 @@ export class Recorder {
   private crf: number;
   private ffmpegPath = "ffmpeg";
   private ffmpegProcess: ChildProcess | null = null;
+  private ffmpegStderr: Buffer[] = [];
   private tempVideo = "";
   private drainResolve: (() => void) | null = null;
   private droppedFrames = 0;
@@ -108,8 +109,6 @@ export class Recorder {
         "bt709",
         "-colorspace",
         "bt709",
-        "-movflags",
-        "+faststart",
         "-r",
         String(this.fps),
         "-vsync",
@@ -130,6 +129,19 @@ export class Recorder {
     const stdin = this.ffmpegProcess.stdin;
     if (!stdin) throw new Error("ffmpeg process has no stdin pipe");
     stdin.on("drain", resolveDrain);
+    // Swallow stdin EPIPE so a dead ffmpeg doesn't crash the Node process
+    // with an unhandled 'error' event. droppedFrames already tracks this.
+    stdin.on("error", () => {
+      this.droppedFrames++;
+    });
+    // Capture ffmpeg stderr so finalize/encode failures are surfaced instead
+    // of silently producing a truncated mp4 with no moov atom.
+    const stderrChunks: Buffer[] = [];
+    this.ffmpegProcess.stderr?.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      if (stderrChunks.length > 200) stderrChunks.shift();
+    });
+    this.ffmpegStderr = stderrChunks;
     this.ffmpegProcess.on("close", resolveDrain);
 
     this.stoppedPromise = new Promise<void>((resolve) => {
@@ -184,16 +196,21 @@ export class Recorder {
               optimizeForSpeed: true,
             }),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("captureScreenshot timeout")), 2000)
-            )
-          ])
+              setTimeout(() => reject(new Error("captureScreenshot timeout")), 5000),
+            ),
+          ]),
         );
         if (!screenshotResult) break;
 
         const buffer = Buffer.from(screenshotResult.data, "base64");
         const now = Date.now();
         const elapsed = now - lastFrameTime;
-        const frameSlots = Math.min(600, Math.max(1, Math.round(elapsed / this.frameMs)));
+        // No upper cap: when capture freezes for several seconds (heavy
+        // page paint, e.g. Google Slides transitions), we must duplicate
+        // enough frames to keep the video timeline aligned with wall-clock,
+        // otherwise downstream trace-based audio composition gets a video
+        // that is much shorter than the trace and audio drifts.
+        const frameSlots = Math.max(1, Math.round(elapsed / this.frameMs));
 
         if (frameSlots > 1) {
           for (let i = 0; i < frameSlots - 1; i++) {
@@ -211,12 +228,17 @@ export class Recorder {
           writeFileSync(resolve(this.framesDir, `frame-${padded}.jpg`), buffer);
         }
 
+        // Anchor lastFrameTime to the screenshot timestamp (`now`), NOT
+        // post-write. Time spent inside writeFrame() is part of the next
+        // capture's `elapsed` and must be counted there so frame duplication
+        // covers it -- otherwise we lose frames during ffmpeg backpressure
+        // and the recorded video grows shorter than wall-clock.
         lastFrameTime = now;
         consecutiveErrors = 0;
       } catch (err) {
         if (!this.running) break;
         consecutiveErrors++;
-        
+
         // Wait a frame before retrying, and increase tolerance to 30 (~1s at 30fps).
         // This prevents the silent type hang from deadlock when React DOM shifts.
         if (consecutiveErrors >= 30) {
@@ -260,29 +282,40 @@ export class Recorder {
 
     if (this.ffmpegProcess) {
       const proc = this.ffmpegProcess;
-      const FFMPEG_CLOSE_TIMEOUT_MS = 10_000;
+      // Allow plenty of time for ffmpeg to flush its libx264 backlog and
+      // write the moov atom. Earlier 10s timeout led to SIGKILL on long
+      // recordings, producing a truncated mp4 with "moov atom not found".
+      const FFMPEG_CLOSE_TIMEOUT_MS = 120_000;
+      let killed = false;
       const killTimer = setTimeout(() => {
+        killed = true;
         try {
           proc.kill("SIGKILL");
         } catch {
           // Process may have already exited
         }
       }, FFMPEG_CLOSE_TIMEOUT_MS);
-      await new Promise<void>((res) => {
+      const exitCode = await new Promise<number | null>((res) => {
         if (proc.exitCode !== null) {
-          res();
+          res(proc.exitCode);
           return;
         }
-        proc.once("close", () => res());
+        proc.once("close", (code) => res(code));
         try {
           proc.stdin?.end();
         } catch (err) {
           console.warn("Failed to close ffmpeg stdin:", err);
-          res();
+          res(null);
         }
       });
       clearTimeout(killTimer);
       this.ffmpegProcess = null;
+      if (killed || (exitCode !== 0 && exitCode !== null)) {
+        const stderr = Buffer.concat(this.ffmpegStderr).toString().slice(-1500);
+        console.warn(
+          `Recorder ffmpeg ${killed ? "killed by timeout" : `exited ${exitCode}`}; output may be truncated.${stderr ? `\n${stderr}` : ""}`,
+        );
+      }
     }
 
     if (this.frameCount === 0) {

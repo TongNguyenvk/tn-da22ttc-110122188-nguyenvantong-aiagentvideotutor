@@ -228,17 +228,19 @@ async def upload_result(
     
     # Upload to R2 if enabled
     video_url = f"/api/jobs/{job_id}/download/video" if video else None
+    r2_key: Optional[str] = None
     if "video" in uploaded_files:
         from backend.storage import R2Storage
         import os
         r2_storage = R2Storage()
         local_video_path = Path(uploaded_files["video"])
-        
+
         if r2_storage.is_enabled() and local_video_path.exists():
             logger.info(f"Uploading OS Worker video {local_video_path.name} to R2...")
             r2_result = await r2_storage.upload_video(local_video_path, job_id)
             if r2_result and "cdn_url" in r2_result:
                 video_url = r2_result["cdn_url"]
+                r2_key = r2_result.get("r2_key")
                 logger.info(f"OS Worker video uploaded to R2: {video_url}. Deleting local file.")
                 try:
                     os.remove(local_video_path)
@@ -248,6 +250,7 @@ async def upload_result(
     # Update job in MongoDB
     result_data = {
         "video_url": video_url,
+        "r2_key": r2_key,
         "document_url": f"/api/jobs/{job_id}/download/document" if document else None,
         "pdf_url": f"/api/jobs/{job_id}/download/pdf" if pdf else None,
         "video_path": uploaded_files.get("video"),

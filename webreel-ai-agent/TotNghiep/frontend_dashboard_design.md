@@ -1,196 +1,685 @@
-# TÀI LIỆU THIẾT KẾ GIAO DIỆN NGƯỜI DÙNG VÀ LUỒNG TƯƠNG TÁC HỆ THỐNG WEBREEL (FRONTEND DASHBOARD DESIGN)
+# TÀI LIỆU THIẾT KẾ PHÁC THẢO GIAO DIỆN NGƯỜI DÙNG VÀ LUỒNG TƯƠNG TÁC
 
-Tài liệu này mô tả chi tiết về thiết kế giao diện người dùng (User Interface) và luồng tương tác (Interactive Flows) của phân hệ Web Dashboard tập trung trong hệ thống WebReel. Phân hệ này đóng vai trò là trạm điều khiển trung tâm giúp người dùng và quản trị viên giao tiếp, kiểm soát toàn bộ cụm vi dịch vụ thực thi (Workers, Redis, FastAPI, Session Manager) chạy ngầm phía sau. Tài liệu được viết hoàn toàn bằng tiếng Việt và không chứa mã nguồn.
+# (WEBREEL FRONTEND DASHBOARD SKETCH DESIGN)
 
----
-
-## 1. KIẾN TRÚC BẢNG ĐIỀU KHIỂN TẬP TRUNG (CENTRALIZED WEB DASHBOARD)
-
-Giao diện Web Dashboard của WebReel được xây dựng dưới dạng ứng dụng trang đơn (Single Page Application - SPA) có tính phản hồi cao, chia thành 4 phân khu chức năng trực quan trên cùng một màn hình làm việc hoặc thông qua thanh điều hướng (Sidebar).
-
-### 1.1. Sơ đồ bố cục giao diện (Dashboard Layout Wireframe)
-
-Dưới đây là sơ đồ phác thảo bố cục giao diện bảng điều khiển tập trung giúp người dùng kiểm soát toàn bộ vòng đời tác vụ:
-
-```
-+-----------------------------------------------------------------------------------------+
-|  LOGO WEBREEL  |  DANH SÁCH DỰ ÁN (PROJECTS LIST)          |  👤 TÀI KHOẢN (PRO TIER)   |
-+-----------------------------------------------------------------------------------------+
-| (Sidebar)      | (Phân Khu Trung Tâm)                                                   |
-|                |                                                                        |
-| [➕ Tạo Mới]    |  [PHÂN KHU 1: KHỞI TẠO TÁC VỤ (JOB INITIALIZATION)]                     |
-|                |  +------------------------------------------------------------------+  |
-| [📊 Dashboard] |  | Chế độ: [🌐 Web Tutorial] [📁 Slide-to-Video] [🖥️ Windows Desktop]  |  |
-|                |  | URL Web: [_______________________________________________________]  |  |
-| [📂 Học Liệu]  |  | Tệp slide: [ Kéo thả tệp PPTX/PDF vào đây để tải lên ]               |  |
-|                |  | Giọng đọc AI: (v) Minh Quang (Nam)  | Bộ phát TTS: (v) Edge TTS     |  |
-| [🔑 noVNC Portal] | | Tùy chọn: [x] Duyệt lại kịch bản thuyết minh trước khi ghi hình     |  |
-|                |  |                                                 [🚀 GỬI YÊU CẦU] |  |
-| [⚙️ Cài Đặt]   |  +------------------------------------------------------------------+  |
-|                |                                                                        |
-|                |  [PHÂN KHU 2: TRÌNH GIÁM SÁT TIẾN ĐỘ THỜI GIAN THỰC (PROGRESS MONITOR)]|
-|                |  +------------------------------------------------------------------+  |
-|                |  | Đang chạy Job: Hướng dẫn tạo tài khoản Github (job_8f9a2c4e...)  |  |
-|                |  | Tiến độ: [===============================>-----------] 72%          |  |
-|                |  | Hiện tại: Pha 5 - Thực thi ghi hình trên trình duyệt ảo (Execution) |  |
-|                |  | +--------------------------------------------------------------+ |  |
-|                |  | | [14:50:12] [Worker] Bắt đầu khởi động Chromium ảo qua Xvfb.. | |  |
-|                |  | | [14:50:15] [Worker] AI trinh sát gọi save_narration slide 1  | |  |
-|                |  | | [14:50:20] [Execution] Bắt đầu quay hình và tái hiện bước 1..| |  |
-|                |  | +--------------------------------------------------------------+ |  |
-|                |  +------------------------------------------------------------------+  |
-|                |                                                                        |
-|                |  [PHÂN KHU 3: KHO LƯU TRỮ HỌC LIỆU THÀNH PHẨM (LIBRARY)]               |
-|                |  +------------------------------------------------------------------+  |
-|                |  | [🎥 Video_Github.mp4] (Xem / Tải về) | [📄 Ketqua_Excel.xlsx] (Tải)   |  |
-|                |  | [🎥 Slide_TienTe.mp4] (Xem / Tải về) | [📄 Baocao_Word.pdf] (Tải về)  |  |
-|                |  +------------------------------------------------------------------+  |
-+-----------------------------------------------------------------------------------------+
-```
+Tài liệu này cung cấp thiết kế phác thảo chi tiết cho tất cả giao diện người dùng và luồng tương tác của hệ thống WebReel. Phân hệ Frontend được xây dựng bằng React, Vite, Tailwind CSS và shadcn/ui dưới dạng ứng dụng trang đơn (Single Page Application - SPA). Tài liệu này được biên soạn để mô tả toàn bộ cấu trúc màn hình từ các trang công cộng cho đến không gian làm việc của người dùng và quản trị viên, giúp lập trình viên nắm bắt bố cục trực quan và logic xử lý giao diện.
 
 ---
 
-### 1.2. Mô tả chi tiết 4 phân khu nghiệp vụ
+## 1. PHÂN KHU GIAO DIỆN VÀ KHUNG BỐ CỤC CHUNG (LAYOUT AND SIDEBAR)
 
-1.  **Phân Khu 1: Khởi tạo Tác vụ (Job Initialization Panel):**
-    - _Nghiệp vụ:_ Cung cấp biểu mẫu đầu vào linh hoạt. Người dùng có thể paste URL trang web cần hướng dẫn, kéo thả tệp tài liệu PPTX/PDF từ máy tính, lựa chọn giọng nói AI phù hợp với ngữ cảnh giảng dạy và cấu hình bật/tắt chế độ duyệt kịch bản (Phase 2.5 Review).
-2.  **Phân Khu 2: Trình giám sát tiến độ thời gian thực (Progress Monitor):**
-    - _Nghiệp vụ:_ Khi một Job được khởi chạy, phân khu này tự động kích hoạt. Nó hiển thị một thanh tiến trình đồ họa (Progress Bar), làm nổi bật pha hiện tại trong 7 pha xử lý (từ Pha 0 đến Pha 6) và nhúng một cửa sổ dòng lệnh (Terminal-style Log Console) tự động cuộn (auto-scroll) hiển thị toàn bộ các bản ghi nhật ký hoạt động chi tiết gửi về từ Worker.
-3.  **Phân Khu 3: Kho Lưu trữ Học liệu Thành phẩm (Study Material Repository):**
-    - _Nghiệp vụ:_ Hiển thị danh sách lưới (Grid View) các video bài giảng đã dựng thành công. Tích hợp sẵn trình phát video HTML5 Player kết nối trực tiếp với đường dẫn ký sẵn (Presigned URL) của Cloudflare R2 CDN để xem trực tiếp không giật lag. Đồng thời hiển thị các nút tải nhanh tệp tài liệu đi kèm (DOCX, PDF).
-4.  **Phân Khu 4: Trạm Quản lý Phiên của Admin (noVNC Portal Integration):**
-    - _Nghiệp vụ:_ Dành riêng cho tài khoản có quyền Admin. Phân khu này nhúng một cửa sổ đồ họa thông qua thẻ Iframe trỏ tới cổng 6080 của Session Manager. Admin có thể trực tiếp click chuột, gõ phím từ xa trên giao diện noVNC để duy trì trạng thái đăng nhập của các tài khoản OneDrive/Google Slides trên Chrome mà không cần rời khỏi trang Dashboard.
+Toàn bộ các trang dành cho người dùng đã đăng nhập đều chia sẻ chung một khung bố cục (AppLayout) chứa thanh điều hướng bên cạnh (Sidebar) và khu vực hiển thị nội dung chính bên phải. Bố cục này thay đổi linh hoạt tùy theo vai trò của tài khoản (Người dùng thường hoặc Quản trị viên).
 
----
-
-## 2. LUỒNG GIAO TIẾP ĐỒNG BỘ TIẾN ĐỘ QUA WEBSOCKET/SSE
-
-Để hiển thị chính xác % tiến độ, thay đổi pha hiện tại và các dòng logs hoạt động của Worker lên màn hình người dùng theo thời gian thực mà không gây quá tải hàng chục ngàn yêu cầu HTTP Request liên tục tới cơ sở dữ liệu (Polling Degradation), WebReel thiết kế **Giải pháp đồng bộ tiến độ thời gian thực qua kết nối hai chiều WebSocket**.
-
-### 2.1. Quy trình giao tiếp 5 bước của luồng đồng bộ tiến độ
-
-```mermaid
-graph TD
-    %% Định nghĩa các thành phần
-    Worker["🤖 Docker Worker ngầm"]
-    RedisPub["📡 Redis Pub/Sub Bus"]
-    FastAPI["⚡ API Gateway (FastAPI)"]
-    WebSocketConn["🔌 Kết nối WebSocket (Cổng 8000)"]
-    ReactUI["💻 Frontend React Dashboard"]
-
-    %% Luồng đi của thông điệp
-    Worker -->|1. Xuất bản gói JSON tiến độ| RedisPub
-    RedisPub -->|2. Lắng nghe sự kiện bất đồng bộ| FastAPI
-    FastAPI -->|3. Đẩy gói tin qua kênh WebSocket| WebSocketConn
-    WebSocketConn -->|4. Nhận bản tin onmessage| ReactUI
-    ReactUI -->|5. Cập nhật trạng thái React State| ProgressUI["📊 Cập nhật Thanh tiến trình & Log Console"]
-
-    %% Định dạng phong cách sơ đồ
-    style Worker fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px;
-    style RedisPub fill:#fff8e1,stroke:#ff8f00,stroke-width:2px;
-    style FastAPI fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    style ReactUI fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-```
-
-#### Mô tả chi tiết các bước trong luồng giao tiếp:
-
-1.  **Bước 1 - Worker xuất bản gói JSON:** Trong quá trình xử lý tác vụ, mỗi khi chuyển pha hoặc thực hiện một thao tác ghi hình thành công, Worker đóng gói thông tin tiến trình thành một gói tin JSON chuẩn (chứa `current_phase`, `phase_name`, `message` và `logs`) rồi xuất bản (Publish) lên kênh Redis Pub/Sub chuyên biệt có tên khóa là `job:{job_id}:progress`.
-2.  **Bước 2 - FastAPI lắng nghe bất đồng bộ:** FastAPI Backend duy trì một tác vụ lắng nghe ngầm bất đồng bộ (Async Redis Subscription). Khi phát hiện có thông điệp mới xuất hiện trên kênh Pub/Sub, FastAPI ngay lập tức thu nhận gói tin mà không cần truy vấn vào cơ sở dữ liệu MongoDB.
-3.  **Bước 3 - Đẩy qua kết nối WebSocket:** FastAPI xác định kết nối WebSocket đang hoạt động tương ứng với mã `job_id` đó và đẩy (Push) thông điệp trực tiếp xuống cổng kết nối WebSocket của trình duyệt người dùng.
-4.  **Bước 4 - Trình duyệt nhận sự kiện `onmessage`:** Ứng dụng Frontend React đang mở kết nối WebSocket bắt được sự kiện nhận tin nhắn (`onmessage`), giải nén gói tin JSON tiến độ.
-5.  **Bước 5 - Cập nhật giao diện tức thời:** Frontend cập nhật dữ liệu tiến độ vào trạng thái (React State). Thanh tiến trình đồ họa tự động chuyển đổi % tương ứng, nhãn mô tả pha hiện tại cập nhật tiếng Việt và dòng log mới được chèn thêm vào cuối Log Console, tự động cuộn màn hình xuống dưới cùng để người dùng theo dõi không độ trễ.
-
----
-
-## 3. THIẾT KẾ ĐIỂM DỪNG KIỂM DUYỆT PHÂN TÁN (PHASE 2.5 INTERACTIVITY)
-
-Khi người dùng kích hoạt tùy chọn "Duyệt kịch bản thuyết minh" khi khởi tạo Job, hệ thống sẽ chèn thêm một **Điểm dừng kiểm duyệt tương tác phân tán (Phase 2.5 Review Point)** vào giữa quy trình tự động. Điểm dừng này cho phép người dùng đóng vai trò là người hiệu đính cuối cùng, kiểm soát chính xác 100% nội dung chữ và cấu hình âm thanh trước khi hệ thống chạy tiến trình ghi hình thực tế rất nặng ở Pha 5.
-
-### 3.1. Giao diện biểu mẫu kiểm duyệt trực quan (Review Panel UI Design)
-
-Khi Job rơi vào trạng thái `pending_review`, màn hình Dashboard của người dùng sẽ tự động chuyển sang chế độ **Bảng kiểm duyệt kịch bản (Interactive Review Panel)**:
+### 1.1. Phác thảo Bố cục Sidebar chung cho Người dùng thường
 
 ```
-+-----------------------------------------------------------------------------------------+
-|  [DỰ ÁN ĐANG CHỜ DUYỆT] Hướng dẫn tạo tài khoản Github (job_8f9a2c4e...)               |
-+-----------------------------------------------------------------------------------------+
-| Cấu hình chung giọng đọc: (v) Minh Quang (Nam)  |  Thời gian đệm slide: [ 300 ] ms       |
-+-----------------------------------------------------------------------------------------+
-|  DANH SÁCH CÁC BƯỚC THUYẾT MINH AI (EDITABLE SLIDES / STEPS)                             |
-|                                                                                         |
-|  [Slide 1] [🖼️ Ảnh chụp trinh sát trang chủ Github]                                     |
-|  Lời thuyết minh AI tạo ra:                                                             |
-|  [ "Chào mừng bạn đến với hướng dẫn tạo tài khoản Github mới nhất năm 2026."        ]   |
-|  * Sửa lại: [_________________________________________________________________________] |
-|                                                                                         |
-|  [Slide 2] [🖼️ Ảnh chụp trinh sát trang đăng ký email]                                    |
-|  Lời thuyết minh AI tạo ra:                                                             |
-|  [ "Tiếp theo, hãy điền địa chỉ email của bạn vào ô trống và nhấn Continue."        ]   |
-|  * Sửa lại: [_________________________________________________________________________] |
-|                                                                                         |
-|  [Slide 3] [🖼️ Ảnh chụp trinh sát trang điền mật khẩu]                                    |
-|  Lời thuyết minh AI tạo ra:                                                             |
-|  [ "Bây giờ, bạn hãy nhập mật khẩu bảo mật chứa cả chữ cái và chữ số."              ]   |
-|  * Sửa lại: [_________________________________________________________________________] |
-|                                                                                         |
-|-----------------------------------------------------------------------------------------|
-|  [🔴 HỦY BỎ JOB]                                        [💾 LƯU NHÁP]  [✅ DUYỆT & GHI HÌNH] |
-+-----------------------------------------------------------------------------------------+
++-------------------------------------------------------------+
+| WebReel                                                     |
+|                                                             |
+| +---------------------------------------------------------+ |
+| | [Icon: User]                                            | |
+| | Nguyen Van A                                            | |
+| | vana@email.com                                          | |
+| +---------------------------------------------------------+ |
+|                                                             |
+| [Icon: LayoutDashboard] Tong quan                           |
+| [Icon: Video] Tao moi                                       |
+|                                                             |
+| ----------------------------------------------------------- |
+| Giao dien: [ Sang ] [ Toi ]                                 |
+|                                                             |
+| [Icon: Key] Doi mat khau                                    |
+| [Icon: LogOut] Dang xuat                                    |
++-------------------------------------------------------------+
+```
+
+### 1.2. Phác thảo Bố cục Sidebar chung cho Quản trị viên (Admin)
+
+```
++-------------------------------------------------------------+
+| WebReel (Admin)                                             |
+|                                                             |
+| +---------------------------------------------------------+ |
+| | [Icon: User]                                            | |
+| | Admin System                                            | |
+| | admin@webreel.vn                                        | |
+| +---------------------------------------------------------+ |
+|                                                             |
+| [Icon: LayoutDashboard] Tong quan                           |
+| [Icon: Users] Nguoi dung                                    |
+| [Icon: Video] Cong viec                                     |
+| [Icon: Monitor] Trinh duyet                                 |
+| [Icon: Snowflake] Session Manager                           |
+|                                                             |
+| ----------------------------------------------------------- |
+| Giao dien: [ Sang ] [ Toi ]                                 |
+|                                                             |
+| [Icon: Key] Doi mat khau                                    |
+| [Icon: LogOut] Dang xuat                                    |
++-------------------------------------------------------------+
 ```
 
 ---
 
-### 3.2. Sơ đồ tuần tự luồng tương tác phê duyệt kịch bản
+## 2. NHÓM GIAO DIỆN CÔNG CỘNG VÀ XÁC THỰC (PUBLIC AND GUEST PAGES)
 
-Dưới đây là sơ đồ tuần tự mô tả chi tiết cách các thành phần trong cụm vi dịch vụ tương tác và đồng bộ hóa khi đi qua Điểm dừng kiểm duyệt Pha 2.5:
+Các trang thuộc nhóm này được sử dụng khi người dùng chưa đăng nhập hệ thống. Giao diện tập trung vào tính tối giản, bảo mật và thân thiện.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as 👤 Người Dùng
-    participant UI as 💻 Frontend React
-    participant API as ⚡ API Gateway (FastAPI)
-    participant Redis as 📡 Redis Queue / Pub-Sub
-    participant Worker as 🤖 Docker Worker
+### 2.1. Trang Đăng nhập (Login Page)
 
-    %% Bước 1: Worker tạm dừng
-    Worker->>Worker: Pha 2 kết thúc (Tạo xong kịch bản chữ thô)
-    Worker->>API: Cập nhật trạng thái Job ("pending_review") và kịch bản thô
-    Worker->>Redis: Publish Event (Chờ duyệt kịch bản)
-    Worker->>Worker: Rơi vào trạng thái chờ (Sleep / Blocked)
+Đường dẫn truy cập: `/login`
 
-    %% Bước 2: Frontend nhận tín hiệu và hiển thị UI
-    Redis-->>API: Nhận thông điệp chờ duyệt kịch bản
-    API-->>UI: Đẩy tín hiệu đổi giao diện qua WebSocket
-    UI->>UI: Hiển thị Biểu mẫu Duyệt Kịch Bản (Review Panel UI)
-    Note over User, UI: Người dùng xem hình ảnh trinh sát từng slide và kịch bản thoại dạng chữ.
+Trang đăng nhập hỗ trợ cả hai phương thức đăng nhập qua tài khoản cục bộ (Email/Mật khẩu) và đăng nhập nhanh qua Google OAuth.
 
-    %% Bước 3: Người dùng chỉnh sửa lời thoại
-    User->>UI: Chỉnh sửa lại văn bản lời thoại, thay giọng đọc AI
-    UI->>UI: Cập nhật trạng thái thay đổi cục bộ
+#### Phác thảo Giao diện
 
-    %% Giai đoạn 4: Gửi lệnh phê duyệt
-    User->>UI: Nhấp nút "✅ DUYỆT & GHI HÌNH"
-    UI->>API: HTTP POST /api/jobs/{id}/review (Gửi gói kịch bản đã sửa)
-    activate API
-    API->>API: Lưu kịch bản thoại đã phê duyệt vào MongoDB
-    API->>Redis: Publish Event "resume_job" (Kèm kịch bản đã phê duyệt)
-    API-->>UI: Phản hồi duyệt kịch bản thành công (HTTP 200 OK)
-    deactivate API
+```
++-----------------------------------------------------------------+
+|                         Logo WebReel                            |
+|                            WebReel                              |
+|                   Dang nhap de tiep tuc                         |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| | Dang nhap                                                   | |
+| | Nhap email va mat khau cua ban                              | |
+| |                                                             | |
+| | [ THONG BAO: Tai khoan chua xac thuc email.               ] | |
+| | [ Click vao day de: Gui lai email xac thuc                ] | |
+| |                                                             | |
+| |               +---------------------------+                 | |
+| |               |    Sign In with Google    |                 | |
+| |               +---------------------------+                 | |
+| |                                                             | |
+| | --------------------------- hoac -------------------------- | |
+| |                                                             | |
+| | Email                                                       | |
+| | [ your@email.com__________________________________________] | |
+| |                                                             | |
+| | Mat khau                             [ Quen mat khau? ]     | |
+| | [ ********________________________________________________] | |
+| |                                                             | |
+| | +---------------------------------------------------------+ |
+| | |                       Dang nhap                         | |
+| | +---------------------------------------------------------+ |
+| |                                                             | |
+| | Chua co tai khoan? [ Dang ky ngay ]                         | |
+| +-------------------------------------------------------------+ |
++-----------------------------------------------------------------+
+```
 
-    %% Giai đoạn 5: Worker thức giấc và tiếp tục xử lý
-    Redis-->>Worker: Nhận thông điệp "resume_job" chứa kịch bản mới
-    Worker->>Worker: Khôi phục trạng thái xử lý ngầm (Resume)
-    Worker->>Worker: Chuyển sang Pha 3 (TTS Generation) sử dụng kịch bản đã phê duyệt
-    Worker->>Redis: Publish Event (Tiến trình: Pha 3 - Đang tạo giọng thuyết minh...)
-    Redis-->>UI: Cập nhật tiến độ Pha 3 lên màn hình người dùng
+- **Xử lý Banner xác thực:** Nếu đăng nhập thất bại với thông báo chưa xác thực email, banner cảnh báo xuất hiện kèm liên kết kích hoạt gửi lại email xác thực (HTTP POST `/api/auth/resend-verification`).
+
+### 2.2. Trang Đăng ký (Register Page)
+
+Đường dẫn truy cập: `/register`
+
+Hỗ trợ tạo tài khoản mới bằng email và mật khẩu hoặc liên kết tài khoản Google trực tiếp.
+
+#### Phác thảo Giao diện
+
+```
++-----------------------------------------------------------------+
+|                         Logo WebReel                            |
+|                            WebReel                              |
+|                       Tao tai khoan moi                         |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| | Dang ky                                                     | |
+| | Dien thong tin de tao tai khoan                             | |
+| |                                                             | |
+| |               +---------------------------+                 | |
+| |               |    Sign Up with Google    |                 | |
+| |               +---------------------------+                 | |
+| |                                                             | |
+| | --------------------------- hoac -------------------------- | |
+| |                                                             | |
+| | Ho va ten                                                   | |
+| | [ Nguyen Van A____________________________________________] | |
+| |                                                             | |
+| | Email                                                       | |
+| | [ your@email.com__________________________________________] | |
+| |                                                             | |
+| | Mat khau                                                    | |
+| | [ ********________________________________________________] | |
+| | * It nhat 8 ky tu, co chu cai va so                         | |
+| |                                                             | |
+| | Xac nhan mat khau                                           | |
+| | [ ********________________________________________________] | |
+| | [ Canh bao: Mat khau khong khop (neu co)                  ] | |
+| |                                                             | |
+| | +---------------------------------------------------------+ |
+| | |                        Dang ky                          | |
+| | +---------------------------------------------------------+ |
+| |                                                             | |
+| | Da co tai khoan? [ Dang nhap ]                              | |
+| +-------------------------------------------------------------+ |
++-----------------------------------------------------------------+
+```
+
+- **Xử lý đăng ký thành công:** Giao diện hiển thị card thông báo gửi mail xác thực.
+
+#### Phác thảo Card Thông báo Đăng ký Thành công
+
+```
++-----------------------------------------------------------------+
+|                         Logo WebReel                            |
+|                            WebReel                              |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| |                   [Icon: Mail - animate]                    | |
+| |                   Kiem tra email cua ban                    | |
+| |                                                             | |
+| | Chung toi da gui mot lien ket xac thuc tai khoan den email  | |
+| | vana@email.com. Vui long kiem tra hop thu (va hop thu rac)  | |
+| | de hoan tat kich hoat.                                      | |
+| |                                                             | |
+| | +---------------------------------------------------------+ |
+| | |                  Quay lai dang nhap                     | |
+| | +---------------------------------------------------------+ |
+| +-------------------------------------------------------------+ |
++-----------------------------------------------------------------+
+```
+
+### 2.3. Trang Xác thực Email (Verify Email Page)
+
+Đường dẫn truy cập: `/verify-email?token=xyz`
+
+Trang này tự động đọc tham số `token` từ URL để gửi yêu cầu xác minh tới Backend (HTTP GET `/api/auth/verify-email/{token}`).
+
+#### Phác thảo các trạng thái hiển thị
+
+```
+Trang thai 1: Dang kiem tra xac thuc (Loading)
++-----------------------------------------------------------------+
+|                   [Icon: Loader - Xoay]                         |
+|                       Dang xac thuc                             |
+| Vui long cho trong giay lat, chung toi dang kiem tra token...   |
++-----------------------------------------------------------------+
+
+Trang thai 2: Xac thuc thanh cong (Success)
++-----------------------------------------------------------------+
+|                   [Icon: CheckCircle]                           |
+|                    Xac thuc thanh cong                          |
+| Email cua ban da duoc xac thuc. Tai khoan san sang hoat dong.   |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| |                       Dang nhap ngay                        | |
+| +-------------------------------------------------------------+ |
++-----------------------------------------------------------------+
+
+Trang thai 3: Xac thuc that bai (Error)
++-----------------------------------------------------------------+
+|                     [Icon: XCircle]                             |
+|                    Xac thuc that bai                            |
+| [ Thong bao loi: Duong dan da het han hoac ma khong hop le ]    |
+|                                                                 |
+| Nhap email cua ban de nhan lai link xac thuc:                   |
+| [ email@yourdomain.com______________________________________]   |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| |                    Gui lai email xac thuc                   | |
+| +-------------------------------------------------------------+ |
+|                                                                 |
+|                     [ Quay lai dang nhap ]                      |
++-----------------------------------------------------------------+
+```
+
+### 2.4. Trang Quên Mật Khẩu (Forgot Password Page)
+
+Đường dẫn truy cập: `/forgot-password`
+
+Yêu cầu hệ thống gửi liên kết đặt lại mật khẩu cho người dùng quên mật khẩu cục bộ.
+
+#### Phác thảo Giao diện
+
+```
++-----------------------------------------------------------------+
+|                          Logo Key                               |
+|                          WebReel                                |
+|                 Khoi phuc mat khau tai khoan                    |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| | Quen mat khau?                                              | |
+| | Nhap email cua ban. Chung toi se gui link khoi phuc.         | |
+| |                                                             | |
+| | [ CANH BAO: Tai khoan dang ky bang Google. Hay quay lai   ] | |
+| | [ trang dang nhap va chon Sign In with Google.             ] | |
+| |                                                             | |
+| | Dia chi Email                                               | |
+| | [ your@email.com__________________________________________] | |
+| |                                                             | |
+| | +---------------------------------------------------------+ |
+| | |             Gui lien ket dat lai mat khau               | |
+| | +---------------------------------------------------------+ |
+| |                                                             | |
+| |                     [ Quay lai dang nhap ]                  | |
+| +-------------------------------------------------------------+ |
++-----------------------------------------------------------------+
+```
+
+- **Xử lý tài khoản Google:** Nếu API trả về lỗi tài khoản thuộc Google Sign-In, giao diện hiển thị banner hướng dẫn sử dụng đăng nhập Google.
+- **Thành công:** Tương tự như trang đăng ký, hiển thị card thông báo kiểm tra hòm thư nhận liên kết đặt lại mật khẩu.
+
+### 2.5. Trang Đặt Lại Mật Khẩu (Reset Password Page)
+
+Đường dẫn truy cập: `/reset-password?token=xyz`
+
+Nhập mật khẩu mới sau khi truy cập liên kết khôi phục từ email.
+
+#### Phác thảo Giao diện
+
+```
+Trang thai loi: Thieu token hoac token khong hop le
++-----------------------------------------------------------------+
+|                         [Icon: XCircle]                         |
+|                     Duong dan khong hop le                      |
+| Ma xac thuc dat lai mat khau thieu hoac khong chinh xac.        |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| |                    Yeu cau lien ket moi                     | |
+| +-------------------------------------------------------------+ |
++-----------------------------------------------------------------+
+
+Trang thai nhap mat khau moi
++-----------------------------------------------------------------+
+|                          Logo Key                               |
+|                          WebReel                                |
+|                        Dat mat khau moi                         |
+|                                                                 |
+| +-------------------------------------------------------------+ |
+| | Tao mat khau moi                                            | |
+| | Nhap mat khau moi va xac nhan de cap nhat tai khoan.         | |
+| |                                                             | |
+| | Mat khau moi                                                | |
+| | [ ********________________________________________________] | |
+| | * It nhat 8 ky tu, bao gom ca chu va so                     | |
+| |                                                             | |
+| | Xac nhan mat khau moi                                       | |
+| | [ ********________________________________________________] | |
+| |                                                             | |
+| | +---------------------------------------------------------+ |
+| | |                   Cap nhat mat khau                     | |
+| | +---------------------------------------------------------+ |
+| |                                                             | |
+| |                     [ Quay lai dang nhap ]                  | |
+| +-------------------------------------------------------------+ |
++-----------------------------------------------------------------+
 ```
 
 ---
 
-### 3.3. Mô tả chi tiết hoạt động của các thành phần trong Luồng Kiểm duyệt
+## 3. NHÓM GIAO DIỆN NGƯỜI DÙNG THƯỜNG (USER WORKSPACE)
 
-1.  **Hành động của Worker:** Khi hoàn thành Pha 2 (Parser), Worker không tự động chuyển sang Pha 3 ngay lập tức. Nó lưu trữ kịch bản chữ thô và các tệp ảnh chụp màn hình trinh sát của từng slide vào MongoDB, đổi trạng thái bản ghi Job thành `pending_review`, gửi tín hiệu cảnh báo lên Redis Pub/Sub và bắt đầu một vòng lặp kiểm tra (hoặc cơ chế lắng nghe sự kiện bất đồng bộ) trạng thái phê duyệt từ Redis trong trạng thái ngủ đông (Sleep).
-2.  **Hành động của Frontend:** Trình lắng nghe WebSocket trên Frontend nhận gói tin `pending_review`. Giao diện React ngay lập tức ẩn thanh tiến trình thô, chuyển đổi màn hình sang dạng Bảng Kiểm Duyệt (Review Panel). Mỗi phần tử dòng thuyết minh được gắn thẻ `<textarea>` cho phép chỉnh sửa văn bản, hiển thị ảnh chụp màn hình trinh sát tương ứng bên cạnh để người dùng có đầy đủ ngữ cảnh trực quan (ví dụ: nhìn thấy ảnh slide 2 thì biết lời thoại slide 2 nên sửa như thế nào).
-3.  **Hành động của API Gateway:** Khi người dùng nhấn nút "Duyệt & Ghi hình", dữ liệu lời thoại đã sửa đổi được gửi về FastAPI qua phương thức HTTP POST. API kiểm tra tính hợp lệ của văn bản, ghi đè kịch bản mới vào MongoDB và xuất bản (Publish) một thông điệp sự kiện tiếp tục công việc (`resume_job`) lên Redis Pub/Sub.
-4.  **Worker thức giấc và khôi phục:** Worker đang ngủ đông bắt được sự kiện `resume_job` trên Redis, giải nén kịch bản thoại đã được người dùng chỉnh sửa, thức giấc đổi trạng thái Job về `processing` và chuyển tiếp thẳng sang Pha 3 (TTS) để tạo giọng nói AI chính xác theo lời thoại mới phê duyệt. Tiến trình ghi hình diễn ra mượt mà và tự động hoàn toàn ở các pha sau.
+Khu vực làm việc sau khi đăng nhập thành công. Cho phép người dùng theo dõi các tác vụ đang thực thi, xem và tải video, tạo tác vụ mới và duyệt kịch bản thuyết minh.
+
+### 3.1. Hộp thoại Đổi mật khẩu (Change Password Dialog)
+
+Xuất hiện dưới dạng cửa sổ popup (Modal) khi nhấn nút Đổi mật khẩu ở chân Sidebar.
+
+#### Phác thảo Giao diện
+
+```
++-----------------------------------------------------------------+
+| [Icon: Lock] Thay doi mat khau                          [ X ]   |
+| --------------------------------------------------------------- |
+| [ CANH BAO: Tai khoan dang nhap bang Google. Thiet lap mat  ]   |
+| [ khau tai day de dang nhap truc tiep bang email.             ]   |
+|                                                                 |
+| Mat khau cu (an neu la Google Account)                          |
+| [ ********__________________________________________________]   |
+|                                                                 |
+| Mat khau moi                                                    |
+| [ ********__________________________________________________]   |
+|                                                                 |
+| Yeu cau mat khau:                                               |
+| [x] It nhat 8 ky tu                                             |
+| [ ] Chua it nhat 1 chu cai                                      |
+| [ ] Chua it nhat 1 chu so                                       |
+|                                                                 |
+| Xac nhan mat khau moi                                           |
+| [ ********__________________________________________________]   |
+|                                                                 |
+|                                         [ Huy ]  [ Cap nhat ]   |
++-----------------------------------------------------------------+
+```
+
+### 3.2. Trang Dashboard Tổng quan của Người dùng
+
+Đường dẫn truy cập: `/`
+
+#### Phác thảo Giao diện
+
+```
+Tong quan
+He thong quan tri va giam sat trang thai render video.  [+ Tao Video Moi]
+-------------------------------------------------------------------------
++-------------------+ +-------------------+ +-------------------+ +-------------------+
+| Tong Video        | | Dang xu lu        | | Cho Review        | | Ty le thanh cong  |
+| 15                | | 2                 | | 1                 | | 86.7%             |
+| Tat ca cac job    | | Dang chay pipeline| | Can duyet kich ban| | Thong ke toan t.g |
++-------------------+ +-------------------+ +-------------------+ +-------------------+
+
+Video gan day                                               [ Refresh ]
++-----------------------------------------------------------------------+
+| Media   | Tieu de                 | Trang thai    | L.Luong | H.Dong  |
+|---------+-------------------------+---------------+---------+---------|
+| [Thumb] | Huong dan mua sam       | Hoan thanh    | 02:15   | [Xem]   |
+|         | 25/05/2026 14:00        |               |         | [Tai]   |
+|---------+-------------------------+---------------+---------+---------|
+| [Edit]  | Bao cao tai chinh Excel | Cho Review    | -       | [Review]|
+|         | 25/05/2026 13:45        |               |         |         |
+|---------+-------------------------+---------------+---------+---------|
+| [Clock] | PowerPoint Gioi thieu   | Dang xu ly    | -       | [Loader]|
+|         | 25/05/2026 13:30        |               |         |         |
+|---------+-------------------------+---------------+---------+---------|
+| [Alert] | Huong dan cai dat Git   | That bai      | -       | [Chi    |
+|         | 25/05/2026 12:00        |               |         | tiet]   |
++-----------------------------------------------------------------------+
+```
+
+### 3.3. Hộp thoại Chi tiết Công việc (Job Detail Dialog)
+
+Hiển thị khi click vào một hàng công việc trên bảng Dashboard.
+
+#### Phác thảo Giao diện
+
+```
++-----------------------------------------------------------------+
+| Chi tiet Job                                            [ X ]   |
+| job_8f9a2c4e-1234-5678-abcd-ef1234567890                        |
+| --------------------------------------------------------------- |
+| Trang thai: [ Hoan thanh ]                                      |
+|                                                                 |
+| Noi dung:                                                       |
+| [ Huong dan tao va lam viec voi repositories tren Github     ]  |
+|                                                                 |
+| Tien trinh Pipeline:                                            |
+| [Check] Phase 1: Scout (browser-use)                            |
+| [Check] Phase 2: Parser (config + tts)                          |
+| [Check] Phase 2.5: Review kich ban TTS                          |
+| [Check] Phase 3: Tao am thanh TTS                               |
+| [Loader] Phase 4: Injector (nhung pause)                        |
+| [Circle] Phase 5: Ghi hinh (Webreel record)                     |
+| [Circle] Phase 6: Composer (ffmpeg sync)                        |
+|                                                                 |
+| [ Chi tiet loi neu co: ... ]                                    |
+|                                                                 |
+| Tao luc: 25/05/2026 13:30:00  | Bat dau: 25/05/2026 13:30:05    |
+| --------------------------------------------------------------- |
+| [ Dong ]                                  [ Review ] [ Tai Video] |
++-----------------------------------------------------------------+
+```
+
+### 3.4. Trang Tạo mới Công việc (Create Video Page)
+
+Đường dẫn truy cập: `/create`
+
+Giao diện cho phép chọn loại nguồn tự động hóa, cấu hình các tùy chọn giọng nói và đẩy yêu cầu xử lý lên hệ thống.
+
+#### Phác thảo Giao diện
+
+```
+Tao Video Moi
+Cung cap y tuong hoac file trinh chieu, Agent se tu dong xu ly.
+-------------------------------------------------------------------------
+Cai dat Pipeline Video
+Thieth lap loai cong viec va tham so cho AI Worker
+
+Loai Video
++---------------+ +---------------+ +---------------+ +---------------+
+| [Icon: Wand2] | | [Icon: Globe] | | [Icon: Pres.] | | [Icon: Mon.]  |
+|    Tu dong    | |      Web      | |  Trinh chieu  | |   May tinh    |
++---------------+ +---------------+ +---------------+ +---------------+
+( ) Dang nhan dien: WEB (Neu chon Tu dong va dang nhap prompt)
+
++-----------------------------------------------------------------------+
+| [ BIEN MAU PHU - Tuy thuoc vao Loai Video da chon ]                   |
+|                                                                       |
+| 1. Neu chon "Trinh chieu":                                            |
+| Tai len PowerPoint (.pptx): [ Chon Tep ] Co the keo tha tep pptx.     |
+|                                                                       |
+| 2. Neu chon "May tinh" (OS Automation):                               |
+| Chon ung dung Windows:                                                |
+| [ Excel ] [ Word ] [ PPT ] [ Chrome ] [ Edge ] [ Firefox ]            |
+| [ Notepad ] [ Calculator ] [ Paint ]                                  |
+|                                                                       |
+| * Neu chon App Office (Excel, Word, PPT):                             |
+|   Upload file co san (Tuy chon): [ Chon Tep ] (De trong de tao moi)   |
+| * Neu chon App Browser (Chrome, Edge, Firefox):                       |
+|   URL trang web: [ https://example.com___________________________ ]   |
+| * Neu chon App don gian (Notepad, Calculator, Paint):                 |
+|   Thong bao: Ung dung se tu dong khoi dong tren Worker Windows.       |
++-----------------------------------------------------------------------+
+
+Prompt / Y tuong kich ban
+[ Vi du: Huong dan tao bang tinh luong nhan vien tren Excel...         ]
+[_______________________________________________________________________]
+
+TTS Engine                Giong doc                 Do tre (ms)
+[ Edge TTS        (v) ]   [ Hoai My (Nu)    (v) ]   [ 500         ]
+
+[x] Bat Voice (TTS)       [x] Tam dung de Review Kich Ban
+
+                                                             [ Tao Job ]
+```
+
+### 3.5. Biểu mẫu Phê duyệt Kịch bản (Phase 2.5 Review Panel)
+
+Xuất hiện khi người dùng thực hiện duyệt lời thoại thoại AI của tác vụ đang ở trạng thái `pending_review`.
+
+#### Phác thảo Giao diện
+
+```
++-----------------------------------------------------------------+
+| [DUYET DONG Y KICH BAN] job_8f9a2c4e                            |
+| --------------------------------------------------------------- |
+| Cau hinh chung: Edge TTS | Giong doc: Hoai My | Do tre: 500 ms  |
+| --------------------------------------------------------------- |
+| DANH SACH CAC BUOC THUYET MINH (EDITABLE STEPS)                 |
+|                                                                 |
+| Slide 1: [ Anh chup trang chu ]                                |
+| Loi thoi AI khoi tao:                                           |
+| [ "Chào mừng bạn đến với hướng dẫn sử dụng WebReel."        ]   |
+| Sua lai thong tin:                                              |
+| [ Chào mừng bạn đến với hướng dẫn sử dụng WebReel hệ thống mới. ]   |
+|                                                                 |
+| Slide 2: [ Anh chup nut dang ky ]                               |
+| Loi thoi AI khoi tao:                                           |
+| [ "Nhấp chuột vào nút Đăng ký ở góc trên bên phải màn hình." ]   |
+| Sua lai thong tin:                                              |
+| [_____________________________________________________________] |
+|                                                                 |
+| Slide 3: [ Anh chup dien thong tin ]                             |
+| Loi thoi AI khoi tao:                                           |
+| [ "Điền các thông tin bắt buộc và nhấn gửi."                 ]   |
+| Sua lai thong tin:                                              |
+| [_____________________________________________________________] |
+|                                                                 |
+| --------------------------------------------------------------- |
+| [ Huy Job ]                             [ Luu nhap ] [ Duyet ]  |
++-----------------------------------------------------------------+
+```
+
+---
+
+## 4. NHÓM GIAO DIỆN QUẢN TRỊ VIÊN (ADMIN DASHBOARD)
+
+Nhóm giao diện dành riêng cho tài khoản có quyền Quản trị viên (Admin). Giúp quản trị hệ thống, quản lý người dùng, công việc, và giám sát tài khoản dịch vụ qua noVNC.
+
+### 4.1. Trang Tổng quan Hệ thống (Admin Dashboard Page)
+
+Đường dẫn truy cập: `/admin`
+
+#### Phác thảo Giao diện
+
+```
+System Overview
+Tong quan he thong va thong ke
+-------------------------------------------------------------------------
++-------------------+ +-------------------+ +-------------------+ +-------------------+
+| Tong nguoi dung   | | Tong Jobs         | | Phan bo goi cuoc  | | Quan tri vien     |
+| 120               | | 1450              | | Free: 80, Pro: 30 | | 5                 |
+| 115 Active, 5 Ban | | Tat ca nguoi dung | | Enterprise: 10    | | 115 Nguoi dung    |
++-------------------+ +-------------------+ +-------------------+ +-------------------+
+
+Job Status Distribution                     Quick Stats
++---------------------------------------+   +---------------------------------------+
+| Status            | Count             |   | Metric            | Value             |
+|-------------------+-------------------|   |-------------------+-------------------|
+| Completed         | 1200              |   | Total Users       | 120               |
+| Failed            | 150               |   | Total Jobs        | 1450              |
+| Processing        | 10                |   | Active Rate       | 95.8%             |
+| Pending Review    | 90                |   |                   |                   |
++---------------------------------------+   +---------------------------------------+
+```
+
+### 4.2. Trang Quản lý Người dùng (Admin Users Page)
+
+Đường dẫn truy cập: `/admin/users`
+
+#### Phác thảo Giao diện
+
+```
+Quan ly nguoi dung
+Quan ly nguoi dung va phan quyen
+-------------------------------------------------------------------------
+Tat ca nguoi dung
++-----------------------------------------------------------------------+
+| Email         | Ten       | Vai tro   | Goi     | T.Thai | H.Muc| H.Dong  |
+|---------------+-----------+-----------+---------+--------+------+---------|
+| admin@wr.vn   | SysAdmin  | Admin     | Enterp. | Active | 0/Inf| [DoiGoi]|
+|---------------+-----------+-----------+---------+--------+------+---------|
+| user1@gmail   | Nguyen A  | User      | Pro     | Active | 45/50| [DoiGoi]|
+|               |           |           |         |        |      | [Khoa]  |
+|---------------+-----------+-----------+---------+--------+------+---------|
+| user2@gmail   | Tran B    | User      | Free    | Locked | 12/10| [DoiGoi]|
+|               |           |           |         |        |      | [Mo]    |
++-----------------------------------------------------------------------+
+
+* Dialog Doi goi dich vu:
++------------------------------------------------------------+
+| Cap nhat goi dich vu                                [ X ]  |
+| Chon goi moi cho user1@gmail.com                           |
+|                                                            |
+| Goi hien tai: Pro                                          |
+| Giong moi:                                                 |
+| [ Free (100 video/thang)                               (v) ]|
+|                                                            |
+|                                         [ Huy ] [ Cap nhat]|
++------------------------------------------------------------+
+
+* Truong hop Bam Khoa Nguoi dung:
+- He thong hien thi Popup prompt nhap Ly do khoa tai khoan truoc khi thuc hien.
+```
+
+### 4.3. Trang Quản lý Công việc Hệ thống (Admin Jobs Page)
+
+Đường dẫn truy cập: `/admin/jobs`
+
+#### Phác thảo Giao diện
+
+```
+Tat ca cong viec
+Tat ca jobs cua moi nguoi dung
+-------------------------------------------------------------------------
+Danh sach cong viec (50 jobs gan nhat)
++-----------------------------------------------------------------------+
+| Ma cong viec  | Tieu de                 | Ma nguoi dung | T.Thai| Date|
+|---------------+-------------------------+---------------+-------+-----|
+| job_8f9a2c4e  | Huong dan mua sam       | usr_7a1b3c    | Comp. |25/05|
+|---------------+-------------------------+---------------+-------+-----|
+| job_3f2b4c1d  | Bao cao tai chinh       | usr_19d2f3    | Review|25/05|
+|---------------+-------------------------+---------------+-------+-----|
+| job_9e2d3f4a  | Loi trinh chieu PPTX    | usr_4f2a1b    | Failed|25/05|
++-----------------------------------------------------------------------+
+```
+
+### 4.4. Trang Quản lý Trình duyệt từ xa (Admin Browser Page)
+
+Đường dẫn truy cập: `/admin/browser`
+
+Màn hình này cho phép quản trị viên đăng nhập vào các tài khoản trực tuyến (như OneDrive, Outlook) trên các worker chuyên biệt bằng cách phát luồng noVNC trực tiếp.
+
+#### Phác thảo Giao diện
+
+```
+Quan ly trinh duyet
+Dang nhap vao OneDrive/Outlook de duy tri phien lam viec cua worker
+-------------------------------------------------------------------------
++---------------------------------------+ +---------------------------------------+
+| [Icon: Monitor] Presentation Worker   | | [Icon: Monitor] Web Worker            |
+| Lan dang nhap cuoi: 24/05/2026 15:00  | | Lan dang nhap cuoi: 10/05/2026 09:00  |
+| [ 1 ngay truoc ] [ Trang thai: OK ]   | | [ 15 ngay truoc ] [ CANH BAO HET HAN ]|
+|                                       | | [ CANH BAO: Can dang nhap lai ngay! ] |
+| [ Dang xem ]                          | | [ Xem trinh duyet ]                   |
++---------------------------------------+ +---------------------------------------+
+
+Trinh duyet tu xa - Presentation Worker                      [ Refresh ]
++-----------------------------------------------------------------------+
+| noVNC is served through Nginx proxy /novnc/.                          |
+|                                                                       |
+| +-------------------------------------------------------------------+ |
+| | [Khung hinh iFrame hien thi Chromium tu xa dang chay tren Worker] | |
+| |                                                                   | |
+| |  Microsoft OneDrive Login Page:                                   | |
+| |  Email: [_______________________________________________________] | |
+| |  Password: [____________________________________________________] | |
+| |                                                                   | |
+| +-------------------------------------------------------------------+ |
+|                                                                       |
+| Sau khi dang nhap xong tren trinh duyet, bam nut de luu trang thai:   |
+|                                              [ Danh dau da dang nhap ]|
++-----------------------------------------------------------------------+
+```
+
+### 4.5. Trang Quản lý Phiên làm việc (Admin Session Manager Page)
+
+Đường dẫn truy cập: `/admin/session`
+
+Trang quản lý phiên Chrome chính (Master Profile), cung cấp các cảnh báo ngắt mạch (Circuit Breaker) khi tài khoản của Worker bị đăng xuất đột ngột và cho phép đóng băng (Freeze) dữ liệu phiên làm việc.
+
+#### Phác thảo Giao diện
+
+```
+Session Manager
+Log in to Microsoft/Google here, then save & freeze for Workers to use
+-------------------------------------------------------------------------
+[ PHAT HIEN CANH BAO - NGAT MACH HOAT DONG (CIRCUIT BREAKER)          ]
+[ Kênh queue "presentation-queue" da bi TAM DUNG do phien het han.     ]
+[ Hay dang nhap lai o trinh duyet duoi, bam Save & Freeze va Resume.    ]
+[ Danh sach queue tam dung:                                           ]
+| - Presentation (OneDrive) [Paused]  [Ly do: Session Expired]  [Resume]|
+-------------------------------------------------------------------------
+
+Thong so phien he thong
++-------------------+ +-------------------+ +-------------------+ +-------------------+
+| Status            | | Last Frozen       | | Archive Size      | | Circuit Breaker   |
+| [ Ready ]         | | 25/05/2026 10:00  | | 345.20 MB         | | 1 queue paused    |
++-------------------+ +-------------------+ +-------------------+ +-------------------+
+
+Trang thai cac hang doi (Queue Status)                      [ Refresh ]
++-----------------------------------------------------------------------+
+| [Icon: PauseCircle] Presentation (OneDrive)     - [Paused]   [Resume] |
+| [Icon: Play]        Web Tutorial                - [Running]           |
+| [Icon: Play]        Presentation (Google)       - [Running]           |
+| [Icon: Play]        Office (Slide-to-Video)     - [Running]           |
++-----------------------------------------------------------------------+
+
+Save & Freeze Session
++-----------------------------------------------------------------------+
+| Hay dam bao ban da dang nhap vao cac dich vu Microsoft va Google      |
+| o trinh duyet ben duoi truoc khi luu.                [ Save & Freeze] |
++-----------------------------------------------------------------------+
+
+Remote Browser (Session Manager)                             [ Refresh ]
++-----------------------------------------------------------------------+
+| noVNC ket noi toi Session Manager Master Chrome Profile.              |
+|                                                                       |
+| +-------------------------------------------------------------------+ |
+| | [Khung hinh iFrame hien thi Chromium tu xa cua Session Manager]   | |
+| |                                                                   | |
+| |  Microsoft Accounts / Google Accounts Dashboard                   | |
+| |                                                                   | |
+| +-------------------------------------------------------------------+ |
++-----------------------------------------------------------------------+
+```

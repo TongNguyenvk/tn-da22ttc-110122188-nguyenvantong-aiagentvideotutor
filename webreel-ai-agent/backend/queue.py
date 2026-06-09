@@ -313,8 +313,22 @@ class JobQueue:
         logger.info(f"Worker waiting for review on {review_channel} (timeout: {timeout_seconds}s)")
         
         try:
-            # Create a dedicated async connection for PubSub
-            async_redis = aioredis.from_url(self.redis_url, decode_responses=True)
+            # Create a dedicated async connection for PubSub.
+            #
+            # redis-py 8.0 broke pubsub.listen(): it now defaults to a 5-second
+            # socket read timeout even on a long-blocking subscribe, so
+            # `async for msg in pubsub.listen()` raises TimeoutError after 5s
+            # instead of blocking until a message arrives. We explicitly set
+            # socket_timeout=None (no read timeout — block forever) and add
+            # health_check_interval so the connection still gets keep-alive
+            # PINGs every 30s for liveness.
+            async_redis = aioredis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_timeout=None,
+                socket_keepalive=True,
+                health_check_interval=30,
+            )
             pubsub = async_redis.pubsub()
             await pubsub.subscribe(review_channel)
             
