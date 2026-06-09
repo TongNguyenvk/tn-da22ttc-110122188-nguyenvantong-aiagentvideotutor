@@ -194,7 +194,7 @@ async def process_job(job: dict) -> dict:
             enable_tts=config.get("enable_tts", True),
             tts_voice=config.get("tts_voice", "banmai"),
             tts_engine=config.get("tts_engine", "edge"),
-            padding_ms=config.get("padding_ms", 300),
+            padding_ms=int(os.getenv("PADDING_MS") or config.get("padding_ms") or 1000),
             enable_review=config.get("enable_review", True),
             job_id=job_id,
             agent_mode="web_tutorial",

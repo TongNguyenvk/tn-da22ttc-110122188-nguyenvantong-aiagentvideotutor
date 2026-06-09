@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { GoogleOAuthProvider } from "@react-oauth/google";
 import {
   BrowserRouter,
   Routes,
@@ -13,28 +15,34 @@ import {
   LogOut,
   User,
   Users,
-  Monitor,
   Snowflake,
+  Key,
+  Bot,
 } from "lucide-react";
 import { ThemeProvider } from "next-themes";
 import { Dashboard } from "@/pages/Dashboard";
 import { Create } from "@/pages/Create";
 import { Admin } from "@/pages/Admin";
-import { AdminBrowser } from "@/pages/AdminBrowser";
 import { AdminSessionManager } from "@/pages/AdminSessionManager";
+import { AdminAgentConfig } from "@/pages/AdminAgentConfig";
 import { Login } from "@/pages/Login";
 import { Register } from "@/pages/Register";
+import { VerifyEmail } from "@/pages/VerifyEmail";
+import { ForgotPassword } from "@/pages/ForgotPassword";
+import { ResetPassword } from "@/pages/ResetPassword";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 
 const queryClient = new QueryClient();
 
 function Sidebar() {
   const location = useLocation();
   const { user, logout, isAdmin } = useAuth();
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
   // Admin có menu riêng, không có Create
   const navItems = isAdmin
@@ -42,8 +50,8 @@ function Sidebar() {
         { name: "Tổng quan", path: "/admin", icon: LayoutDashboard, show: true },
         { name: "Người dùng", path: "/admin/users", icon: Users, show: true },
         { name: "Công việc", path: "/admin/jobs", icon: Video, show: true },
-        { name: "Trình duyệt", path: "/admin/browser", icon: Monitor, show: true },
         { name: "Session Manager", path: "/admin/session", icon: Snowflake, show: true },
+        { name: "Cấu hình Agent", path: "/admin/agent-config", icon: Bot, show: true },
       ]
     : [
         { name: "Tổng quan", path: "/", icon: LayoutDashboard, show: true },
@@ -87,6 +95,14 @@ function Sidebar() {
         </div>
         <Button
           variant="outline"
+          className="w-full justify-start border-white/10 hover:bg-primary/10 hover:text-primary hover:border-primary/20"
+          onClick={() => setIsChangePasswordOpen(true)}
+        >
+          <Key className="w-4 h-4 mr-2" />
+          Đổi mật khẩu
+        </Button>
+        <Button
+          variant="outline"
           className="w-full justify-start border-white/10 hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/20"
           onClick={logout}
         >
@@ -94,6 +110,11 @@ function Sidebar() {
           Đăng xuất
         </Button>
       </div>
+
+      <ChangePasswordDialog
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+      />
     </aside>
   );
 }
@@ -111,8 +132,8 @@ function AppLayout() {
             <Route path="/admin" element={<Admin />} />
             <Route path="/admin/users" element={<Admin />} />
             <Route path="/admin/jobs" element={<Admin />} />
-            <Route path="/admin/browser" element={<AdminBrowser />} />
             <Route path="/admin/session" element={<AdminSessionManager />} />
+            <Route path="/admin/agent-config" element={<AdminAgentConfig />} />
             <Route path="*" element={<Navigate to="/admin" replace />} />
           </Routes>
         </main>
@@ -135,28 +156,35 @@ function AppLayout() {
   );
 }
 
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
+
 function App() {
   return (
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-      <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
-          <AuthProvider>
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
-              <Route
-                path="/*"
-                element={
-                  <ProtectedRoute>
-                    <AppLayout />
-                  </ProtectedRoute>
-                }
-              />
-            </Routes>
-            <Toaster />
-          </AuthProvider>
-        </BrowserRouter>
-      </QueryClientProvider>
+      <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+        <QueryClientProvider client={queryClient}>
+          <BrowserRouter>
+            <AuthProvider>
+              <Routes>
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
+                <Route path="/verify-email" element={<VerifyEmail />} />
+                <Route path="/forgot-password" element={<ForgotPassword />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
+                <Route
+                  path="/*"
+                  element={
+                    <ProtectedRoute>
+                      <AppLayout />
+                    </ProtectedRoute>
+                  }
+                />
+              </Routes>
+              <Toaster />
+            </AuthProvider>
+          </BrowserRouter>
+        </QueryClientProvider>
+      </GoogleOAuthProvider>
     </ThemeProvider>
   );
 }

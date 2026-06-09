@@ -1,10 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import * as z from "zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { createVideo } from "@/lib/api";
+import { createVideo, fetchPublicTTSOptions } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -38,7 +38,7 @@ import {
 import { useEffect, useState } from "react";
 
 const formSchema = z.object({
-  job_type: z.enum(["auto", "web", "presentation", "desktop"]),
+  job_type: z.enum(["web", "presentation", "desktop"]),
   prompt: z.string().min(5, { message: "Prompt phải có ít nhất 5 ký tự." }),
   tts_engine: z.string(),
   tts_voice: z.string(),
@@ -67,12 +67,20 @@ export function Create() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
-  const [detectedType, setDetectedType] = useState<string>("web");
+
+  // Pull the actual enabled-provider list from backend so this picker
+  // reflects whatever admin enabled in Agent Config — no more hardcoded
+  // [edge, fpt] tuple that drifts from server reality.
+  const { data: ttsOptions } = useQuery({
+    queryKey: ["public-tts-options"],
+    queryFn: fetchPublicTTSOptions,
+    staleTime: 60_000,
+  });
 
   const form = useForm<any>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      job_type: "auto",
+      job_type: "web",
       prompt: "",
       tts_engine: "",
       tts_voice: "",
@@ -85,40 +93,23 @@ export function Create() {
   });
 
   const currentJobType = form.watch("job_type");
-  const promptValue = form.watch("prompt");
   const selectedEngine = form.watch("tts_engine");
   const selectedAppType = form.watch("app_type");
 
+  // Seed engine + voice from admin defaults once the options arrive.
   useEffect(() => {
-    if (currentJobType === "auto" && promptValue) {
-      const task = promptValue.toLowerCase();
-      const webKeywords = [
-        "github",
-        "website",
-        "web",
-        "browser",
-        "trang web",
-        "google.com",
-      ];
-      const osKeywords = [
-        "desktop",
-        "windows",
-        "app",
-        "phần mềm",
-        "notepad",
-        "calculator",
-        "file explorer",
-      ];
-
-      if (webKeywords.some((kw) => task.includes(kw))) {
-        setDetectedType("web");
-      } else if (osKeywords.some((kw) => task.includes(kw))) {
-        setDetectedType("desktop");
-      } else {
-        setDetectedType("web"); // default
+    if (!ttsOptions) return;
+    if (!form.getValues("tts_engine") && ttsOptions.default_provider) {
+      form.setValue("tts_engine", ttsOptions.default_provider);
+      if (ttsOptions.default_voice) {
+        form.setValue("tts_voice", ttsOptions.default_voice);
       }
     }
-  }, [promptValue, currentJobType]);
+  }, [ttsOptions, form]);
+
+  // Voices for the currently picked provider
+  const availableVoices =
+    ttsOptions?.providers.find((p) => p.id === selectedEngine)?.voices ?? [];
 
   // Reset voice when engine changes
   useEffect(() => {
@@ -144,7 +135,7 @@ export function Create() {
   });
 
   function onSubmit(values: z.infer<typeof formSchema>) {
-    const finalJobType = values.job_type === "auto" ? detectedType : values.job_type;
+    const finalJobType = values.job_type;
 
     // Validation for presentation
     if (finalJobType === "presentation" && !file) {
@@ -186,7 +177,7 @@ export function Create() {
     });
   }
 
-  const activeType = currentJobType === "auto" ? detectedType : currentJobType;
+  const activeType = currentJobType;
 
   return (
     <div className="max-w-3xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -219,16 +210,7 @@ export function Create() {
                     <FormLabel className="text-gray-700 dark:text-zinc-300">
                       Loại Video
                     </FormLabel>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-2">
-                      <Button
-                        type="button"
-                        variant={field.value === "auto" ? "default" : "outline"}
-                        className={`h-20 flex-col gap-2 ${field.value !== "auto" && "border-gray-200 bg-gray-50 text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/10"}`}
-                        onClick={() => field.onChange("auto")}
-                      >
-                        <Wand2 className="w-6 h-6" />
-                        <span className="text-xs">Tự động</span>
-                      </Button>
+                    <div className="grid grid-cols-3 gap-3 mt-2">
                       <Button
                         type="button"
                         variant={field.value === "web" ? "default" : "outline"}
@@ -257,12 +239,6 @@ export function Create() {
                         <span className="text-xs">Máy tính</span>
                       </Button>
                     </div>
-                    {field.value === "auto" && (
-                      <p className="text-xs text-primary mt-2 flex items-center gap-1">
-                        <Wand2 className="w-3 h-3" /> Đang nhận diện:{" "}
-                        <strong className="uppercase">{detectedType}</strong>
-                      </p>
-                    )}
                   </FormItem>
                 )}
               />
@@ -447,12 +423,16 @@ export function Create() {
                           <option value="" disabled className="bg-white dark:bg-zinc-900">
                             Chọn TTS Engine
                           </option>
-                          <option value="edge" className="bg-white dark:bg-zinc-900">
-                            Edge TTS
-                          </option>
-                          <option value="fpt" className="bg-white dark:bg-zinc-900">
-                            FPT.AI
-                          </option>
+                          {(ttsOptions?.providers ?? []).map((p) => (
+                            <option
+                              key={p.id}
+                              value={p.id}
+                              className="bg-white dark:bg-zinc-900"
+                            >
+                              {p.name}
+                              {p.id === ttsOptions?.default_provider ? " (mặc định)" : ""}
+                            </option>
+                          ))}
                         </select>
                       </FormControl>
                       <FormMessage />
@@ -478,38 +458,15 @@ export function Create() {
                           <option value="" disabled className="bg-white dark:bg-zinc-900">
                             {!selectedEngine ? "Chọn TTS Engine trước" : "Chọn giọng đọc"}
                           </option>
-                          {selectedEngine === "edge" && (
-                            <>
-                              <option
-                                value="vi-VN-HoaiMyNeural"
-                                className="bg-white dark:bg-zinc-900"
-                              >
-                                Hoài My (Nữ - Miền Nam)
-                              </option>
-                              <option
-                                value="vi-VN-NamMinhNeural"
-                                className="bg-white dark:bg-zinc-900"
-                              >
-                                Nam Minh (Nam - Miền Nam)
-                              </option>
-                            </>
-                          )}
-                          {selectedEngine === "fpt" && (
-                            <>
-                              <option
-                                value="banmai"
-                                className="bg-white dark:bg-zinc-900"
-                              >
-                                Ban Mai (Nữ)
-                              </option>
-                              <option
-                                value="leminh"
-                                className="bg-white dark:bg-zinc-900"
-                              >
-                                Lê Minh (Nam)
-                              </option>
-                            </>
-                          )}
+                          {availableVoices.map((v) => (
+                            <option
+                              key={v.id}
+                              value={v.id}
+                              className="bg-white dark:bg-zinc-900"
+                            >
+                              {v.label}
+                            </option>
+                          ))}
                         </select>
                       </FormControl>
                       <FormMessage />

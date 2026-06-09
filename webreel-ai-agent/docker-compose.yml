@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   webreel-ai-agent:
     build:
@@ -6,21 +8,39 @@ services:
     container_name: webreel-ai-agent
     ports:
       - "8501:8501"
-    env_file:
-      - .env
     environment:
+      # Gemini API key (primary)
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # GitHub Models token (fallback)
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      # Output directory for generated videos
       - OUTPUT_DIR=/app/output
-      - PYTHONIOENCODING=utf-8
     volumes:
+      # Mount output directory for video files
       - ./output:/app/output
-    # Fix lỗi "Aw, Snap!" của Headless Chrome khi thiếu bộ nhớ chia sẻ
+      # Mount custom configs if needed
+      - ./configs:/app/configs
+    # Required for Playwright browsers
     shm_size: "2gb"
+    # Security options for Chrome
     security_opt:
       - seccomp=unconfined
+    # Restart policy
     restart: unless-stopped
+    # Resource limits
     deploy:
       resources:
         limits:
           memory: 4G
         reservations:
           memory: 2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  output:
+  configs:

@@ -29,11 +29,19 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # 2. Install Python dependencies (only what autoscaler needs)
-RUN pip install --no-cache-dir redis
+# - redis: pubsub for new-job / job-kill events
+# - pymongo: read agent runtime config (API key + model) to inject as -e
+#   overrides on `docker compose run`
+RUN pip install --no-cache-dir redis pymongo
 
 # 3. Copy only the code autoscaler needs
 COPY webreel-ai-agent/backend ./webreel-ai-agent/backend
 COPY webreel-ai-agent/worker ./webreel-ai-agent/worker
+
+# Security: Tao non-root user webreel (UID/GID 1000)
+# Autoscaler khong can root vi giao tiep Docker qua Socket Proxy (HTTP)
+RUN groupadd -g 1000 webreel && useradd -u 1000 -g webreel -m webreel
+RUN chown -R webreel:webreel /app
 
 HEALTHCHECK NONE
 

@@ -64,6 +64,9 @@ class Database:
             # Create indexes for users collection
             await db.users.create_indexes([
                 IndexModel([("email", ASCENDING)], unique=True, name="email_unique"),
+                IndexModel([("google_id", ASCENDING)], unique=True, sparse=True, name="google_id_unique"),
+                IndexModel([("verification_token", ASCENDING)], sparse=True, name="verification_token"),
+                IndexModel([("reset_token", ASCENDING)], sparse=True, name="reset_token"),
             ])
             
             # Create indexes for cookie_status collection

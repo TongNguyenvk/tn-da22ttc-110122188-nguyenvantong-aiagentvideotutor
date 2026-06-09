@@ -111,7 +111,7 @@ Return ONLY a valid JSON array of strings, no other text. Example:
 
     try:
         response = await client.aio.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
+            model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
             contents=prompt,
         )
         text = response.text.strip()

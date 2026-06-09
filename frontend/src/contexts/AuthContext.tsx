@@ -6,6 +6,8 @@ interface User {
   user_id: string;
   email: string;
   name: string;
+  auth_provider: "local" | "google" | "both";
+  avatar_url?: string | null;
   role: "user" | "admin";
   tier: string;
   status: string;
@@ -22,8 +24,14 @@ interface AuthContextType {
   user: User | null;
   token: string | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, name: string) => Promise<void>;
+  loginWithGoogle: (credential: string) => Promise<void>;
+  register: (
+    email: string,
+    password: string,
+    name: string,
+  ) => Promise<{ message: string; email: string }>;
   logout: () => void;
+  updateUser: (user: User) => void;
   isLoading: boolean;
   isAuthenticated: boolean;
   isAdmin: boolean;
@@ -31,7 +39,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = "";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -51,6 +59,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(false);
   }, []);
 
+  const _handleAuthSuccess = (data: { access_token: string; user: User }) => {
+    setToken(data.access_token);
+    setUser(data.user);
+    localStorage.setItem("token", data.access_token);
+    localStorage.setItem("user", JSON.stringify(data.user));
+
+    if (data.user.role === "admin") {
+      navigate("/admin");
+    } else {
+      navigate("/");
+    }
+  };
+
   const login = async (email: string, password: string) => {
     try {
       const response = await fetch(`${API_BASE}/api/auth/login`, {
@@ -65,24 +86,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const data = await response.json();
-
-      setToken(data.access_token);
-      setUser(data.user);
-
-      localStorage.setItem("token", data.access_token);
-      localStorage.setItem("user", JSON.stringify(data.user));
-
+      _handleAuthSuccess(data);
       toast.success("Đăng nhập thành công!");
-
-      if (data.user.role === "admin") {
-        navigate("/admin");
-      } else {
-        navigate("/");
-      }
     } catch (error) {
       toast.error("Đăng nhập thất bại", {
         description:
           error instanceof Error ? error.message : "Vui lòng kiểm tra lại thông tin",
+      });
+      throw error;
+    }
+  };
+
+  const loginWithGoogle = async (credential: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || "Google login failed");
+      }
+
+      const data = await response.json();
+      _handleAuthSuccess(data);
+      toast.success("Đăng nhập bằng Google thành công!");
+    } catch (error) {
+      toast.error("Đăng nhập Google thất bại", {
+        description: error instanceof Error ? error.message : "Vui lòng thử lại",
       });
       throw error;
     }
@@ -102,18 +135,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const data = await response.json();
-
-      setToken(data.access_token);
-      setUser(data.user);
-
-      localStorage.setItem("token", data.access_token);
-      localStorage.setItem("user", JSON.stringify(data.user));
-
-      toast.success("Đăng ký thành công!");
-      navigate("/");
+      toast.success("Dang ky thanh cong! Vui long kiem tra email.");
+      return data;
     } catch (error) {
-      toast.error("Đăng ký thất bại", {
-        description: error instanceof Error ? error.message : "Vui lòng thử lại",
+      toast.error("Dang ky that bai", {
+        description: error instanceof Error ? error.message : "Vui long thu lai",
       });
       throw error;
     }
@@ -128,12 +154,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     navigate("/login");
   };
 
+  const updateUser = (newUser: User) => {
+    setUser(newUser);
+    localStorage.setItem("user", JSON.stringify(newUser));
+  };
+
   const value = {
     user,
     token,
     login,
+    loginWithGoogle,
     register,
     logout,
+    updateUser,
     isLoading,
     isAuthenticated: !!token && !!user,
     isAdmin: user?.role === "admin",

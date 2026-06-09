@@ -135,6 +135,27 @@ async def lifespan(app: FastAPI):
     global _result_listener_task
     
     # Startup
+    # Check default passwords (Fail-safe credentials check)
+    import os
+    import sys
+    
+    env = os.getenv("ENVIRONMENT", "development")
+    mongo_pass = os.getenv("MONGO_PASSWORD", "")
+    redis_pass = os.getenv("REDIS_PASSWORD", "")
+    
+    if mongo_pass == "webreel_mongo_2026" or redis_pass == "webreel_secret_2026":
+        if env == "production":
+            logger.critical(
+                "CRITICAL SECURITY ALERT: Running in PRODUCTION mode but default credentials are still in use! "
+                "MONGO_PASSWORD or REDIS_PASSWORD is set to default values. Exiting for safety."
+            )
+            sys.exit(1)
+        else:
+            logger.warning(
+                "SECURITY WARNING: Default credentials (MONGO_PASSWORD/REDIS_PASSWORD) are in use. "
+                "Ensure these are changed in production environments."
+            )
+
     shutdown_handler.register_signal_handlers()
     
     # Connect to MongoDB FIRST (source of truth)
@@ -346,13 +367,18 @@ async def _listen_for_worker_results():
                         
                         r2_storage = R2Storage()
                         local_path = Path(video_path_str)
-                        
+                        r2_key: Optional[str] = None
+
                         if r2_storage.is_enabled() and local_path.exists():
                             logger.info(f"Uploading video {local_path.name} to R2...")
                             r2_result = await r2_storage.upload_video(local_path, job_id)
-                            
+
                             if r2_result and "cdn_url" in r2_result:
+                                # Keep cdn_url for backward compat but stash
+                                # r2_key so /view can sign a short-lived URL
+                                # on each play.
                                 video_url = r2_result["cdn_url"]
+                                r2_key = r2_result.get("r2_key")
                                 logger.info(f"Uploaded to R2: {video_url}. Deleting local file.")
                                 try:
                                     os.remove(local_path)
@@ -367,6 +393,7 @@ async def _listen_for_worker_results():
                     result_data = {
                         "video_path": video_path_str,
                         "video_url": video_url,
+                        "r2_key": r2_key,
                         "duration_seconds": None,
                     }
                     

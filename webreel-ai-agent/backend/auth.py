@@ -88,11 +88,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     if user is None:
         raise credentials_exception
     
-    # Check if user is suspended
-    if user.get("status") == "suspended":
+    # Check if user status is active
+    if user.get("status") != "active":
+        detail_msg = "Account suspended"
+        if user.get("status") == "pending_verification":
+            detail_msg = "Email verification pending"
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account suspended"
+            detail=detail_msg
         )
     
     return user

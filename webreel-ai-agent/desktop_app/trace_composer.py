@@ -137,10 +137,33 @@ def _get_audio_duration_ms(audio_path: Path) -> int:
     size = audio_path.stat().st_size
     return int(size * 8 / 128)
 
+def _get_video_duration_ms(video_path: Path) -> int:
+    """Get video duration in ms using ffprobe."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path)
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            duration_s = float(result.stdout.strip())
+            return int(duration_s * 1000)
+    except Exception as e:
+        print(f"[TraceComposer] ffprobe error: {e}")
+    return 0
 
 def compute_narration_timestamps(
     trace: list[TraceStep],
     audio_files: list[Path],
+    audio_speed: float = 1.0,
 ) -> list[int]:
     """
     Compute ms timestamps for each narration using ONLY trace data.
@@ -155,6 +178,9 @@ def compute_narration_timestamps(
     Args:
         trace: Execution trace from Webreel (the ONLY source of truth for timing).
         audio_files: Audio files in order, used to measure durations for overlap check.
+        audio_speed: atempo factor that will be applied at compose time. Used to
+            shrink effective audio duration in the overlap check so we do not
+            over-push narrations that will actually fit.
 
     Returns:
         List of placement timestamps in ms, one per narration.
@@ -170,6 +196,12 @@ def compute_narration_timestamps(
         dur = _get_audio_duration_ms(af)
         audio_durations.append(dur)
         print(f"[TraceComposer] Audio {af.name}: {dur}ms ({dur/1000:.1f}s)")
+
+    # Effective duration after atempo speed-up
+    effective_durations = [int(d / audio_speed) if audio_speed > 0 else d for d in audio_durations]
+    if audio_speed > 1.0:
+        print(f"[TraceComposer] Effective audio durations after atempo {audio_speed:.3f}x: "
+              f"{[d/1000 for d in effective_durations]}")
 
     # Build a lookup for steps by their designated tts_index
     # Format in description: "[TTS:idx] ..." or "[NARRATION:idx] ..."
@@ -225,9 +257,10 @@ def compute_narration_timestamps(
             real_ts = last_placed + gap
             print(f"[TraceComposer] Narration {i} -> fallback at {real_ts}ms (no mapping)")
 
-        # Prevent overlap with previous narration
+        # Prevent overlap with previous narration. Use the EFFECTIVE duration
+        # (post-atempo) so we do not over-push when the audio will be sped up.
         if i > 0 and real_timestamps:
-            prev_end = real_timestamps[-1] + audio_durations[i - 1]
+            prev_end = real_timestamps[-1] + effective_durations[i - 1]
             min_start = prev_end + 800  # 800ms buffer for natural pacing
             if real_ts < min_start:
                 print(f"[TraceComposer]   Pushed from {real_ts}ms to {min_start}ms (prev ends at {prev_end}ms)")
@@ -278,11 +311,62 @@ def compose_video_from_trace(
         print("[TraceComposer] No valid audio files. Returning original.")
         return video_path
 
-    # Compute placement timestamps from trace data (preserving indices)
-    timestamps = compute_narration_timestamps(trace, processed_audio)
+    # ---------------------------------------------------------
+    # Step 1: Measure drift BEFORE placing timestamps so the overlap-check
+    # inside compute_narration_timestamps uses the post-atempo duration.
+    # ---------------------------------------------------------
+    # The recorded video almost never matches the trace wall-clock exactly:
+    #   - video < trace: frames dropped (Docker software rendering can't keep
+    #     up) -> video plays "fast forward" relative to trace timestamps.
+    #   - video > trace: at low FPS the recorder duplicates frames generously
+    #     and captures extra wall-clock (warm-up/teardown) -> video is STRETCHED
+    #     relative to trace, so an action the trace says happens at T actually
+    #     appears later in the video.
+    # In BOTH cases the mapping trace-time -> video-time is approximately
+    # linear, so we scale every anchor by speed_factor = video / trace.
+    # (Previously we only handled the compression case; stretching left late
+    # narrations playing AHEAD of their action.)
+    # ---------------------------------------------------------
+    video_duration_ms = _get_video_duration_ms(video_path)
+    trace_duration_ms = int(trace[-1].end_time_ms) if trace else 0
+
+    speed_factor = 1.0
+    if video_duration_ms > 0 and trace_duration_ms > 0:
+        speed_factor = video_duration_ms / trace_duration_ms
+        print(f"[TraceComposer] Trace: {trace_duration_ms}ms | Video: {video_duration_ms}ms")
+        if speed_factor < 0.98:
+            print(f"[TraceComposer] -> Video is COMPRESSED (shorter). Scaling timestamps by {speed_factor:.4f}")
+        elif speed_factor > 1.02:
+            print(f"[TraceComposer] -> Video is STRETCHED (longer). Scaling timestamps by {speed_factor:.4f}")
+        else:
+            print(f"[TraceComposer] -> Video ~matches trace ({speed_factor:.4f}). No significant scaling.")
+    else:
+        print("[TraceComposer] Could not verify video duration, using raw trace timestamps.")
+
+    # ---------------------------------------------------------
+    # Atempo speed-match: ONLY needed when video is shorter than trace
+    # (compression). Then scaling timestamps down packs narrations closer and
+    # audio durations stay the same -> next narration lands inside the previous
+    # one's tail -> overlap-prevention pushes everything later -> drift behind.
+    # Speeding audio up (clamped) lets each clip fit its compressed slot.
+    # When video is stretched (speed_factor > 1) there is MORE room, so no
+    # atempo: audio plays at natural speed, just anchored later.
+    # ---------------------------------------------------------
+    atempo_factor = 1.0
+    if speed_factor < 0.98:
+        atempo_factor = min(1.25, 1.0 / speed_factor)
+        print(f"[TraceComposer] -> Speeding audio with atempo={atempo_factor:.4f} to fit compressed video")
+
+    # Step 2: Compute placement timestamps with atempo-aware overlap check.
+    timestamps = compute_narration_timestamps(trace, processed_audio, audio_speed=atempo_factor)
+
+    # Step 3: Scale anchor timestamps to the actual video timeline (both
+    # compression and stretching). Skip only when within +/-2% of 1.0.
+    if abs(speed_factor - 1.0) > 0.02:
+        timestamps = [int(ts * speed_factor) for ts in timestamps]
 
     # Log the placements
-    print(f"\n[TraceComposer] Audio placements:")
+    print(f"\n[TraceComposer] Audio placements (after scaling):")
     for i, (af, ts) in enumerate(zip(processed_audio, timestamps)):
         af_name = af.name if af else "FAILED"
         print(f"  [{i}] {af_name} -> {ts}ms ({ts / 1000:.2f}s)")
@@ -312,9 +396,18 @@ def compose_video_from_trace(
         filter_parts.append(
             f"anullsrc=channel_layout=mono:sample_rate=24000:duration={silence_duration_s}[silence{idx}]"
         )
-        filter_parts.append(
-            f"[silence{idx}][{current_input_idx}:a]concat=n=2:v=0:a=1[{label}]"
-        )
+        if atempo_factor > 1.0:
+            # Speed up the audio segment so it fits the compressed video slot
+            filter_parts.append(
+                f"[{current_input_idx}:a]atempo={atempo_factor:.4f}[sp{idx}]"
+            )
+            filter_parts.append(
+                f"[silence{idx}][sp{idx}]concat=n=2:v=0:a=1[{label}]"
+            )
+        else:
+            filter_parts.append(
+                f"[silence{idx}][{current_input_idx}:a]concat=n=2:v=0:a=1[{label}]"
+            )
         mix_inputs.append(f"[{label}]")
         current_input_idx += 1
 

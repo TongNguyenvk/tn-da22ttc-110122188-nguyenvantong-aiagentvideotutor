@@ -105,50 +105,54 @@ if [ "$XVFB_STARTED" != "true" ]; then
 fi
 
 # ---------------------------------------------------------------
-# Step 3: Start x11vnc
+# Step 3 + 4: Start x11vnc + noVNC (chi khi ENABLE_VNC=1)
+# Worker prod chi can Xvfb cho Chrome anti-bot; VNC/noVNC ngon CPU/RAM
+# va khong can thiet o steady state. Bat khi can debug bang ENABLE_VNC=1.
 # ---------------------------------------------------------------
-echo "[entrypoint] Starting x11vnc on port ${VNC_PORT}..."
-x11vnc \
-    -display ":${DISPLAY_NUM}" \
-    -forever \
-    -shared \
-    -nopw \
-    -rfbport "${VNC_PORT}" \
-    -xkb \
-    -noxrecord \
-    -noxfixes \
-    -noxdamage \
-    -wait 5 \
-    -defer 5 \
-    2>/dev/null &
-X11VNC_PID=$!
-sleep 2
+if [ "${ENABLE_VNC:-0}" = "1" ]; then
+    echo "[entrypoint] ENABLE_VNC=1 -> Starting x11vnc on port ${VNC_PORT}..."
+    x11vnc \
+        -display ":${DISPLAY_NUM}" \
+        -forever \
+        -shared \
+        -nopw \
+        -rfbport "${VNC_PORT}" \
+        -xkb \
+        -noxrecord \
+        -noxfixes \
+        -noxdamage \
+        -wait 5 \
+        -defer 5 \
+        2>/dev/null &
+    X11VNC_PID=$!
+    sleep 2
 
-if ! kill -0 $X11VNC_PID 2>/dev/null; then
-    echo "[entrypoint] WARN: x11vnc failed to start, continuing without VNC"
+    if ! kill -0 $X11VNC_PID 2>/dev/null; then
+        echo "[entrypoint] WARN: x11vnc failed to start, continuing without VNC"
+    else
+        echo "[entrypoint] x11vnc running (PID: $X11VNC_PID)"
+    fi
+
+    echo "[entrypoint] Starting noVNC (websockify) on port ${NOVNC_PORT}..."
+    websockify \
+        --web /usr/share/novnc \
+        "${NOVNC_PORT}" \
+        "localhost:${VNC_PORT}" \
+        2>/dev/null &
+    NOVNC_PID=$!
+    sleep 1
+
+    if ! kill -0 $NOVNC_PID 2>/dev/null; then
+        echo "[entrypoint] WARN: noVNC failed to start, continuing without noVNC"
+    else
+        echo "[entrypoint] noVNC running (PID: $NOVNC_PID)"
+        echo "[entrypoint] ================================================"
+        echo "[entrypoint] noVNC ready at: http://localhost:${NOVNC_PORT}/vnc.html"
+        echo "[entrypoint] ================================================"
+    fi
 else
-    echo "[entrypoint] x11vnc running (PID: $X11VNC_PID)"
-fi
-
-# ---------------------------------------------------------------
-# Step 4: Start noVNC
-# ---------------------------------------------------------------
-echo "[entrypoint] Starting noVNC (websockify) on port ${NOVNC_PORT}..."
-websockify \
-    --web /usr/share/novnc \
-    "${NOVNC_PORT}" \
-    "localhost:${VNC_PORT}" \
-    2>/dev/null &
-NOVNC_PID=$!
-sleep 1
-
-if ! kill -0 $NOVNC_PID 2>/dev/null; then
-    echo "[entrypoint] WARN: noVNC failed to start, continuing without noVNC"
-else
-    echo "[entrypoint] noVNC running (PID: $NOVNC_PID)"
-    echo "[entrypoint] ================================================"
-    echo "[entrypoint] noVNC ready at: http://localhost:${NOVNC_PORT}/vnc.html"
-    echo "[entrypoint] ================================================"
+    echo "[entrypoint] ENABLE_VNC=0 (default) -> bo qua x11vnc + noVNC (tiet kiem CPU/RAM)"
+    echo "[entrypoint] De debug bat lai: dat ENABLE_VNC=1 trong env"
 fi
 
 # ---------------------------------------------------------------
@@ -191,6 +195,8 @@ if [ -f "$CHROME_ARCHIVE" ]; then
     # Set CHROME_PROFILE_DIR for workers to use
     export CHROME_PROFILE_DIR="$WORKER_PROFILE_DIR"
     echo "[entrypoint] CHROME_PROFILE_DIR set to ${WORKER_PROFILE_DIR}"
+    # Chown extracted profile cho user webreel (file duoc extract boi root)
+    chown -R webreel:webreel "$WORKER_PROFILE_DIR"
 elif [ -d "$CHROME_MASTER_DIR" ]; then
     # Fallback: copy from mounted directory if no archive
     echo "[entrypoint] No archive found, using mounted directory as fallback..."
@@ -202,6 +208,7 @@ elif [ -d "$CHROME_MASTER_DIR" ]; then
     rm -f "${CHROME_PROFILE}/SingletonLock" 2>/dev/null || true
     rm -f "${CHROME_PROFILE}/SingletonSocket" 2>/dev/null || true
     rm -f "${CHROME_PROFILE}/SingletonCookie" 2>/dev/null || true
+    chown -R webreel:webreel "$CHROME_PROFILE"
     export CHROME_PROFILE_DIR="$CHROME_PROFILE"
 else
     echo "[entrypoint] WARNING: No Chrome master profile found at ${CHROME_MASTER_DIR}"
@@ -214,7 +221,22 @@ pkill -9 -f "chromium" 2>/dev/null || true
 sleep 1
 
 # ---------------------------------------------------------------
-# Step 6: Run the worker command
+# Step 6: Fix ownership cho Docker volumes (xu ly data cu tao boi root)
+# Chi can chay 1 lan, cac lan sau ownership da dung
 # ---------------------------------------------------------------
+echo "[entrypoint] Fixing ownership for output volume..."
+chown -R webreel:webreel /app/output 2>/dev/null || true
+chown -R webreel:webreel /app/chrome_profile 2>/dev/null || true
+
+# Dam bao /tmp/.X11-unix co quyen sticky bit (Xvfb socket)
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix
+
+# ---------------------------------------------------------------
+# Step 7: Ha quyen va chay worker command
+# Tat ca setup (cleanup, Xvfb, VNC, noVNC, profile extract) da xong duoi root.
+# Bay gio drop xuong user webreel (UID 1000) de chay worker process.
+# ---------------------------------------------------------------
+echo "[entrypoint] Dropping privileges to user webreel (UID 1000)..."
 echo "[entrypoint] Starting worker: $@"
-exec "$@"
+exec gosu webreel "$@"

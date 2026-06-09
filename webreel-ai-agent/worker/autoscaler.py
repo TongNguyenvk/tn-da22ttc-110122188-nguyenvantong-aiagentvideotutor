@@ -154,6 +154,56 @@ class AutoScaler:
             logger.warning(f"Failed to count containers for {service}: {e}")
         return 0
 
+    def _build_env_overrides(self) -> list[str]:
+        """Read latest agent config from Mongo and emit `-e KEY=VAL` args.
+
+        Workers normally inherit GEMINI_API_KEY / GEMINI_MODEL / FPT_API_KEY
+        from docker-compose.prod.yml (which reads the host .env). When an
+        admin sets values via the UI, we override them here so the NEW
+        container picks them up at boot — no image rebuild, no compose
+        restart needed. Empty values are skipped so the compose default
+        still applies if no admin override exists.
+        """
+        try:
+            from backend.crud.agent_config import get_agent_config_sync
+            cfg = get_agent_config_sync()
+        except Exception as e:
+            logger.warning(f"Could not load agent config from Mongo: {e}")
+            return []
+
+        overrides: list[str] = []
+
+        # Gemini + FPT (uppercase env names match what workers already read)
+        for env_key in ("gemini_api_key", "gemini_model", "fpt_api_key"):
+            value = (cfg.get(env_key) or "").strip()
+            if not value:
+                continue
+            overrides.extend(["-e", f"{env_key.upper()}={value}"])
+
+        # TTS defaults — workers read these as fallbacks when the job config
+        # doesn't pin a provider/voice. Workers themselves still honour
+        # config.tts_engine / config.tts_voice on the job; these env vars
+        # only kick in when the user accepted the default.
+        for env_key, env_name in (
+            ("tts_default_provider", "TTS_DEFAULT_PROVIDER"),
+            ("tts_default_voice", "TTS_DEFAULT_VOICE"),
+        ):
+            value = (cfg.get(env_key) or "").strip()
+            if value:
+                overrides.extend(["-e", f"{env_name}={value}"])
+
+        if overrides:
+            # Log model + masked key so we can verify what the worker will see
+            model = cfg.get("gemini_model") or "(unset)"
+            has_key = "set" if cfg.get("gemini_api_key") else "unset"
+            has_fpt = "set" if cfg.get("fpt_api_key") else "unset"
+            tts = cfg.get("tts_default_provider") or "(unset)"
+            logger.info(
+                f"Injecting admin overrides: model={model}, gemini_key={has_key}, "
+                f"fpt_key={has_fpt}, tts_default={tts}"
+            )
+        return overrides
+
     def launch_worker(self, service: str, job_id: str) -> bool:
         """Launch a new worker container for a specific job.
 
@@ -165,9 +215,12 @@ class AutoScaler:
         logger.info(f"Launching {service} container: {container_name} for job {job_id}")
 
         try:
+            env_overrides = self._build_env_overrides()
+
             cmd = _compose_base_cmd() + [
                 "run", "-d", "--rm",
                 "--name", container_name,
+                *env_overrides,
                 service,
             ]
 

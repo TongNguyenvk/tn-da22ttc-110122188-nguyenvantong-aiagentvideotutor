@@ -241,7 +241,7 @@ async def phase1_scout(task: str, cdp_url: str, cancel_event=None, agent_mode: s
             raise ValueError("Neither ROUTER_API_KEY nor GEMINI_API_KEY found in .env")
         
         llm = ChatGoogle(
-            model="gemini-3.1-flash-lite-preview",
+            model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
             api_key=api_key,
         )
 
@@ -387,19 +387,24 @@ async def phase1_scout(task: str, cdp_url: str, cancel_event=None, agent_mode: s
             "- Escape: Exit presentation mode (DO NOT use unless instructed)\n\n"
             "EXACT WORKFLOW (follow this precisely, step by step):\n"
             "1. Navigate to the Google Slides /present URL\n"
-            "2. Use 'wait' action for 8 seconds (first slide loads automatically)\n"
-            "3. Call save_narration with 2-3 sentences about the current slide\n"
-            "4. Press ArrowRight ONCE to advance to next slide\n"
-            "5. Use 'wait' action for 2 seconds (next slide loads)\n"
-            "6. Repeat steps 3-5 for each remaining slide\n"
-            "7. After narrating the LAST slide, call done IMMEDIATELY\n\n"
+            "2. Use 'wait' action for 15 seconds (first slide loads automatically)\n"
+            "3. Follow this EXACT sequence for the slides:\n"
+            "   - For the FIRST slide (already on screen): IMMEDIATELY call save_narration\n"
+            "   - Then press ArrowRight to advance to Slide 2\n"
+            "   - Use 'wait' action for 3 seconds\n"
+            "   - Call save_narration for Slide 2\n"
+            "   - Press ArrowRight to advance to Slide 3\n"
+            "   - Use 'wait' action for 3 seconds\n"
+            "   - And so on until you have narrated all slides.\n"
+            "   - Do NOT press ArrowRight before narrating the first slide.\n"
+            "4. After narrating the LAST slide, call done IMMEDIATELY\n\n"
             "CRITICAL RULES:\n"
             "- Use ONLY send_keys for navigation. NEVER click anything.\n"
             "- Press ArrowRight exactly ONCE per slide, then wait\n"
             "- Keep each narration SHORT: 2-3 sentences maximum\n"
             "- Explain the KEY POINT of the slide, not every detail\n"
             "- DO NOT press Escape - it will exit presentation mode\n"
-            "- Google Slides loads faster than PowerPoint - shorter wait times\n\n"
+            "- Google Slides loads faster than PowerPoint but wait is still needed\n\n"
             "LOOP EXIT RULES (CRITICAL):\n"
             "- After narrating the LAST slide, call done IMMEDIATELY\n"
             "- DO NOT press Escape before calling done\n"

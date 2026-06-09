@@ -47,7 +47,7 @@ export interface JobDetail {
 }
 
 // Dung bien moi truong Vite, fallback ve localhost khi dev
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
 function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem("token");
@@ -200,14 +200,27 @@ export function getVideoDownloadUrl(jobId: string): string {
   return `${API_BASE}/jobs/${jobId}/video`;
 }
 
+// Lấy URL xem video. Backend kiểm owner + cấp signed URL ngắn hạn (10 phút).
+// Không expose R2 CDN URL trực tiếp ra client nữa — link cũ leak ai cũng xem được.
+export async function getVideoViewUrl(jobId: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/view?json=true`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Không lấy được URL xem video");
+  }
+  const data = await res.json();
+  return data.url;
+}
+
 // URL xem truoc video (stream qua static files)
+// Nginx proxy /videos/ toi backend, chi can dung relative path
+// DEPRECATED: dùng getVideoViewUrl() — nó kiểm owner và cấp signed URL.
 export function getVideoPreviewUrl(videoUrl: string | undefined): string | null {
   if (!videoUrl) return null;
-  // video_url tu backend da la duong dan tuong doi /videos/...
-  // Can ghep voi backend host
-  const backendHost = API_BASE.replace("/api", "");
   if (videoUrl.startsWith("http")) return videoUrl;
-  return `${backendHost}${videoUrl}`;
+  return videoUrl;
 }
 
 // Admin API functions
@@ -424,5 +437,193 @@ export async function resumeQueue(queueName: string): Promise<{ message: string 
     headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error("Failed to resume queue");
+  return res.json();
+}
+
+// Agent runtime config (API keys + model name)
+// Autoscaler injects these as -e overrides on each `docker compose run`,
+// so changes take effect on the NEXT job — no worker rebuild needed.
+export interface AgentConfig {
+  gemini_api_key: string; // masked unless reveal=true
+  gemini_model: string;
+  fpt_api_key: string; // masked unless reveal=true
+  updated_at: string | null;
+  updated_by: string | null;
+  supported_models: string[];
+  supported_tts_providers: TTSProvider[];
+  tts_default_provider: string;
+  tts_default_voice: string;
+  tts_enabled_providers: string[];
+  is_revealed: boolean;
+}
+
+export interface TTSVoice {
+  id: string;
+  label: string;
+}
+
+export interface TTSProvider {
+  id: string;
+  name: string;
+  requires_key?: boolean;
+  voices: TTSVoice[];
+}
+
+export interface PublicTTSOptions {
+  providers: TTSProvider[];
+  default_provider: string;
+  default_voice: string;
+}
+
+export async function fetchPublicTTSOptions(): Promise<PublicTTSOptions> {
+  const res = await fetch(`${API_BASE}/admin/agent-config/public/tts`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to fetch TTS options");
+  return res.json();
+}
+
+export async function fetchAgentConfig(reveal = false): Promise<AgentConfig> {
+  const res = await fetch(
+    `${API_BASE}/admin/agent-config${reveal ? "?reveal=true" : ""}`,
+    { headers: getAuthHeaders() },
+  );
+  if (!res.ok) throw new Error("Failed to fetch agent config");
+  return res.json();
+}
+
+export async function updateAgentConfig(payload: {
+  gemini_api_key?: string;
+  gemini_model?: string;
+  fpt_api_key?: string;
+  tts_default_provider?: string;
+  tts_default_voice?: string;
+  tts_enabled_providers?: string[];
+}): Promise<{
+  message: string;
+  gemini_api_key: string;
+  gemini_model: string;
+  fpt_api_key: string;
+  updated_at: string;
+  updated_by: string;
+  note: string;
+}> {
+  const res = await fetch(`${API_BASE}/admin/agent-config`, {
+    method: "PUT",
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to update agent config");
+  }
+  return res.json();
+}
+
+// Quick connectivity tests — let admin verify a key/provider works before
+// committing it. Backend hits the upstream service with a tiny request.
+export interface TestResult {
+  ok: boolean;
+  latency_ms: number;
+  detail: string;
+}
+
+export async function testGemini(payload: {
+  api_key?: string;
+  model?: string;
+}): Promise<TestResult & { model: string }> {
+  const res = await fetch(`${API_BASE}/admin/agent-config/gemini/test`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Gemini test failed");
+  }
+  return res.json();
+}
+
+export async function testTTS(payload: {
+  provider: string;
+  voice?: string;
+  api_key?: string;
+  text?: string;
+}): Promise<
+  TestResult & {
+    duration_ms: number;
+    audio_base64?: string;
+    audio_mime?: string;
+  }
+> {
+  const res = await fetch(`${API_BASE}/admin/agent-config/tts/test`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "TTS test failed");
+  }
+  return res.json();
+}
+
+// Google Drive OAuth token (used by presentation-gg-worker for upload).
+// Token is generated out-of-band on a dev machine and uploaded here —
+// workers never run a browser-based OAuth flow inside the container.
+export interface GoogleOAuthStatus {
+  exists: boolean;
+  valid: boolean;
+  expired: boolean;
+  has_refresh_token: boolean;
+  scopes: string[];
+  expiry: string | null;
+  token_path: string;
+  credentials_file_exists: boolean;
+  credentials_path: string;
+  warning_level: "ok" | "warning" | "critical" | "missing";
+}
+
+export async function fetchGoogleOAuthStatus(): Promise<GoogleOAuthStatus> {
+  const res = await fetch(`${API_BASE}/admin/agent-config/google-oauth`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to fetch Google OAuth status");
+  return res.json();
+}
+
+export async function uploadGoogleOAuthToken(
+  file: File,
+): Promise<{ message: string; status: GoogleOAuthStatus }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const token = localStorage.getItem("token");
+  const res = await fetch(`${API_BASE}/admin/agent-config/google-oauth/upload`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to upload token");
+  }
+  return res.json();
+}
+
+// Start the Google OAuth web flow. Returns the URL to open in a popup —
+// after the user logs in, Google redirects to /callback which closes the
+// popup and posts a message back to the opener.
+export async function startGoogleOAuthLogin(): Promise<{
+  auth_url: string;
+  state: string;
+  redirect_uri: string;
+}> {
+  const res = await fetch(`${API_BASE}/admin/agent-config/google-oauth/authorize`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to start OAuth flow");
+  }
   return res.json();
 }

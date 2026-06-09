@@ -19,6 +19,7 @@ SCHEMA V1 COMPLIANCE:
 - stepScroll: requires "action" (x/y/selector optional)
 """
 
+import os
 import re
 import logging
 from typing import Any
@@ -170,6 +171,14 @@ def convert_history_to_config_and_script(
     last_input_text = None
     narration_counter = 0
     last_narration_text = ""  # For deduplication
+    # Track xem da co action (ArrowRight/click/input/navigate) ke tu narration cuoi chua.
+    # Neu chua (2 save_narration lien tiep, khong co action giua), narration moi se
+    # ghi DE narration cuoi (vi agent thuong goi 2 save_narration cho cung 1 context
+    # khi tu sua noi dung). Neu co action giua -> day la narration moi cho context moi.
+    narration_advanced_since_last = True
+    # Count actions since last narration to distinguish "rewrite on same context"
+    # vs "new narration for new context"
+    actions_since_last_narration = 0
 
     for i, action_item in enumerate(actions):
 
@@ -178,8 +187,37 @@ def convert_history_to_config_and_script(
             narration_data = action_item["save_narration"]
             text = narration_data.get("text", "") if isinstance(narration_data, dict) else str(narration_data)
             if text.strip():
-                # Dedup: skip if >80% similar to the previous narration
                 clean_text = text.strip()
+
+                # CASE 1: Hai save_narration LIEN TIEP tren cung context (chua co action giua).
+                # Agent thuong tu sua loi narration vua noi -> noi dung sau chi tiet hon.
+                # Ghi DE narration cuoi (giu narration sau) thay vi them moi.
+                # CHI ap dung khi: (a) chua co action nao giua 2 narration, VA
+                # (b) chua co ArrowRight/slide-advance (presentation mode).
+                should_replace = (
+                    not narration_advanced_since_last and
+                    actions_since_last_narration == 0 and
+                    tts_script and
+                    steps
+                )
+
+                if should_replace:
+                    prev_idx = tts_script[-1]["narration_index"]
+                    logger.info(
+                        f"[V3 Parser] Replacing previous narration {prev_idx} "
+                        f"(agent rewrote on same context): {clean_text[:50]}..."
+                    )
+                    tts_script[-1]["text"] = clean_text
+                    # Tim pause cuoi co tag [NARRATION:prev_idx] va cap nhat description
+                    for step in reversed(steps):
+                        if step.get("action") == "pause" and step.get("description", "").startswith(f"[NARRATION:{prev_idx}]"):
+                            step["description"] = f"[NARRATION:{prev_idx}] {clean_text}"
+                            break
+                    last_narration_text = clean_text
+                    continue
+
+                # CASE 2: similarity-based dedup (fallback - khi co action giua nhung
+                # narration moi gan giong narration cu, vd: agent retry sau loi khac).
                 if last_narration_text:
                     overlap = len(set(clean_text.split()) & set(last_narration_text.split()))
                     total = max(len(set(clean_text.split())), 1)
@@ -191,6 +229,8 @@ def convert_history_to_config_and_script(
                 idx = narration_counter
                 narration_counter += 1
                 last_narration_text = clean_text
+                narration_advanced_since_last = False  # reset cho luot ke
+                actions_since_last_narration = 0  # reset counter
 
                 # Add to tts_script for Phase 3
                 tts_script.append({
@@ -213,6 +253,7 @@ def convert_history_to_config_and_script(
 
         # ===== NAVIGATE =====
         if "navigate" in action_item:
+            actions_since_last_narration += 1
             nav_data = action_item["navigate"]
             url = nav_data.get("url", "") if isinstance(nav_data, dict) else str(nav_data)
 
@@ -241,6 +282,7 @@ def convert_history_to_config_and_script(
 
         # ===== CLICK =====
         elif "click" in action_item:
+            actions_since_last_narration += 1
             selector = _extract_selector_from_element(element_str)
             element_text = _extract_text_from_element(element_str)
             
@@ -305,6 +347,7 @@ def convert_history_to_config_and_script(
                             "ms": 2000,
                             "description": "Wait 2 seconds after advancing slide"
                         })
+                        narration_advanced_since_last = True
                     elif "previous" in text_lower or "trước" in text_lower or "back" in text_lower:
                         # Previous slide -> ArrowLeft
                         steps.append({
@@ -407,6 +450,7 @@ def convert_history_to_config_and_script(
 
         # ===== INPUT (type text) =====
         elif "input" in action_item:
+            actions_since_last_narration += 1
             inp_data = action_item["input"]
             text = inp_data.get("text", "") if isinstance(inp_data, dict) else ""
             selector = _extract_selector_from_element(element_str)
@@ -464,6 +508,7 @@ def convert_history_to_config_and_script(
 
         # ===== SELECT_DROPDOWN =====
         elif "select_dropdown" in action_item:
+            actions_since_last_narration += 1
             dropdown_data = action_item["select_dropdown"]
             value = dropdown_data.get("text", "") if isinstance(dropdown_data, dict) else str(dropdown_data)
             selector = _extract_selector_from_element(element_str)
@@ -521,6 +566,7 @@ def convert_history_to_config_and_script(
 
         # ===== SEND_KEYS (standalone, not following input) =====
         elif "send_keys" in action_item:
+            actions_since_last_narration += 1
             keys_data = action_item["send_keys"]
             keys = keys_data.get("keys", "") if isinstance(keys_data, dict) else str(keys_data)
             if keys:
@@ -551,6 +597,7 @@ def convert_history_to_config_and_script(
                         "ms": 2000,
                         "description": "Wait 2 seconds after advancing slide"
                     })
+                    narration_advanced_since_last = True
                 # ArrowLeft -> Previous slide (needs 2s wait)
                 elif "arrowleft" in keys_lower or keys == "ArrowLeft":
                     steps.append({
@@ -640,7 +687,7 @@ def convert_history_to_config_and_script(
             }
         },
         "defaultDelay": 300,
-        "fps": 30,
+        "fps": int(os.getenv("WEBREEL_FPS", "12")),
         "steps": steps
     }
     
