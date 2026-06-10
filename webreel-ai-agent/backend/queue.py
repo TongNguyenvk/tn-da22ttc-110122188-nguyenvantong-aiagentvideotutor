@@ -43,10 +43,20 @@ class JobQueue:
         """Lazy Redis connection with password support."""
         if self._redis is None and REDIS_AVAILABLE:
             try:
+                # redis-py 8.0 changed the default socket read timeout from
+                # None to a finite value, which breaks any blocking command
+                # (BRPOPLPUSH, BLPOP, pubsub.listen): they raise TimeoutError
+                # after ~5 s even when the caller asked the server to block
+                # longer. Explicitly pin socket_timeout=None and add a TCP
+                # keepalive so idle pollers stay healthy through NAT/SSH
+                # tunnels.
                 self._redis = redis.from_url(
                     self.redis_url,
                     decode_responses=True,
                     socket_connect_timeout=5,
+                    socket_timeout=None,
+                    socket_keepalive=True,
+                    health_check_interval=30,
                     retry_on_timeout=True,
                 )
                 self._redis.ping()
