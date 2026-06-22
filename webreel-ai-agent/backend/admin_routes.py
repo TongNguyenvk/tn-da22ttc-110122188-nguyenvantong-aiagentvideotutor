@@ -7,17 +7,20 @@ Endpoints:
 - POST /admin/verify-cookies - Verify cookies after manual login
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Response
 from datetime import datetime, timedelta
 import os
 import logging
 import asyncio
 
+from backend.auth import get_current_admin
+from backend.routes.browser import build_novnc_url, create_novnc_token, set_novnc_cookie
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger("admin")
 
 @router.get("/cookie-status")
-async def get_cookie_status():
+async def get_cookie_status(admin: dict = Depends(get_current_admin)):
     """
     Check OneDrive cookies expiry status.
     
@@ -102,7 +105,10 @@ async def get_cookie_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/novnc-url")
-async def get_novnc_url():
+async def get_novnc_url(
+    response: Response,
+    admin: dict = Depends(get_current_admin),
+):
     """
     Get noVNC URL for embedded iframe.
     
@@ -117,8 +123,12 @@ async def get_novnc_url():
     # No SSH tunnel needed; the admin accesses it directly via the
     # same origin as the frontend (e.g. https://domain.com/novnc/).
     
+    token, expires_at = create_novnc_token(admin["email"])
+    set_novnc_cookie(response, token)
+
     return {
-        "url": "/novnc/vnc.html?autoconnect=true&resize=scale",
+        "url": build_novnc_url(),
+        "expires_at": expires_at.isoformat(),
         "instructions": [
             "1. Click 'Login to OneDrive' to open the VNC window below",
             "2. In the VNC browser, navigate to https://onedrive.live.com",
@@ -129,7 +139,7 @@ async def get_novnc_url():
     }
 
 @router.post("/verify-cookies")
-async def verify_cookies():
+async def verify_cookies(admin: dict = Depends(get_current_admin)):
     """
     Verify that cookies are valid after manual login.
     
@@ -183,7 +193,7 @@ async def verify_cookies():
         }
 
 @router.get("/system-status")
-async def get_system_status():
+async def get_system_status(admin: dict = Depends(get_current_admin)):
     """
     Get overall system status including workers, queues, and cookies.
     """

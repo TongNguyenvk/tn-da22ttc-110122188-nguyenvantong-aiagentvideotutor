@@ -2,10 +2,12 @@
 Session Manager API - Freeze Master Chrome Profile
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 import httpx
 import logging
 import asyncio
+
+from backend.auth import get_current_admin
 
 router = APIRouter(prefix="/api/session", tags=["session"])
 logger = logging.getLogger(__name__)
@@ -14,7 +16,7 @@ SESSION_MANAGER_URL = "http://session-manager:8001"
 
 
 @router.post("/freeze")
-async def freeze_session():
+async def freeze_session(admin: dict = Depends(get_current_admin)):
     """
     Freeze the Chrome session by triggering graceful shutdown and archiving.
     
@@ -37,7 +39,7 @@ async def freeze_session():
                 )
             
             result = response.json()
-            logger.info(f"Session frozen successfully: {result}")
+            logger.info(f"Admin {admin['email']} froze session successfully: {result}")
             return result
             
     except httpx.ConnectError:
@@ -59,13 +61,14 @@ async def freeze_session():
 
 
 @router.get("/status")
-async def get_session_status():
+async def get_session_status(admin: dict = Depends(get_current_admin)):
     """
     Get current session manager status.
     """
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(f"{SESSION_MANAGER_URL}/api/internal/status")
+            logger.info(f"Admin {admin['email']} checked session status")
             return response.json()
     except httpx.ConnectError:
         return {"status": "unavailable", "message": "Session Manager not running"}

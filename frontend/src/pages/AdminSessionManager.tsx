@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchSessionStatus,
+  fetchVNCUrls,
   freezeSession,
   fetchQueueStatus,
   resumeQueue,
@@ -30,7 +31,8 @@ import {
 import { toast } from "sonner";
 
 const NOVNC_URL =
-  import.meta.env.VITE_NOVNC_URL || "/novnc/vnc.html?autoconnect=true&resize=scale";
+  import.meta.env.VITE_NOVNC_URL ||
+  "/novnc/vnc.html?autoconnect=true&resize=scale&path=websockify";
 
 // Tên hiển thị thân thiện cho từng queue
 const QUEUE_LABELS: Record<string, string> = {
@@ -52,6 +54,17 @@ export function AdminSessionManager() {
     queryKey: ["session-status"],
     queryFn: fetchSessionStatus,
     refetchInterval: 30000,
+  });
+
+  const {
+    data: vncUrls,
+    isLoading: vncUrlsLoading,
+    refetch: refetchVncUrls,
+  } = useQuery({
+    queryKey: ["vnc-urls"],
+    queryFn: fetchVNCUrls,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   // Circuit Breaker: Queue pause status
@@ -90,6 +103,7 @@ export function AdminSessionManager() {
   const lastFrozenTime = sessionStatus?.last_frozen
     ? new Date(sessionStatus.last_frozen).toLocaleString("vi-VN")
     : null;
+  const novncUrl = vncUrls?.web?.url || NOVNC_URL;
 
   // Kiểm tra có queue nào đang bị pause không
   const pausedQueues = queueStatus?.queues
@@ -395,7 +409,14 @@ export function AdminSessionManager() {
                 Freeze" above.
               </CardDescription>
             </div>
-            <Button variant="outline" size="sm" onClick={() => refetchStatus()}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                refetchStatus();
+                refetchVncUrls();
+              }}
+            >
               <RefreshCw className="w-4 h-4 mr-2" />
               Refresh
             </Button>
@@ -412,12 +433,19 @@ export function AdminSessionManager() {
             </div>
 
             <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden bg-black">
-              <iframe
-                src={NOVNC_URL}
-                className="w-full h-[600px]"
-                title="noVNC - Session Manager"
-                allow="clipboard-read; clipboard-write"
-              />
+              {vncUrlsLoading && !vncUrls ? (
+                <div className="w-full h-[600px] flex items-center justify-center">
+                  <Loader2 className="w-6 h-6 animate-spin text-white" />
+                </div>
+              ) : (
+                <iframe
+                  key={novncUrl}
+                  src={novncUrl}
+                  className="w-full h-[600px]"
+                  title="noVNC - Session Manager"
+                  allow="clipboard-read; clipboard-write"
+                />
+              )}
             </div>
           </div>
         </CardContent>
