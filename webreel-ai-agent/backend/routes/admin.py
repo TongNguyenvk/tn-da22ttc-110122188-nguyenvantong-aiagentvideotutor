@@ -73,6 +73,32 @@ def _scrub_admin_created_user(user: dict) -> dict:
     return safe_user
 
 
+async def _attach_job_owner_fields(
+    job: dict,
+    user_cache: Optional[dict[str, Optional[dict]]] = None
+) -> dict:
+    """Attach minimal owner context for admin job review."""
+    user_id = job.get("user_id")
+    if not user_id:
+        return job
+
+    cache = user_cache if user_cache is not None else {}
+    if user_id not in cache:
+        cache[user_id] = await get_user_by_id(user_id)
+
+    user = cache.get(user_id)
+    if not user:
+        job["user_name"] = None
+        job["user_status"] = None
+        job["user_tier"] = None
+        return job
+
+    job["user_name"] = user.get("name")
+    job["user_status"] = user.get("status")
+    job["user_tier"] = user.get("tier")
+    return job
+
+
 @router.get("/users")
 async def admin_list_users(
     status: Optional[str] = None,
@@ -339,9 +365,11 @@ async def admin_list_all_jobs(
     )
     
     # Convert ObjectId to string
+    user_cache: dict[str, Optional[dict]] = {}
     for job in jobs:
         if "_id" in job:
             job["_id"] = str(job["_id"])
+        await _attach_job_owner_fields(job, user_cache)
     
     logger.info(f"Admin {admin['email']} listed {len(jobs)} jobs")
     
@@ -374,6 +402,7 @@ async def admin_get_job(
     # Convert ObjectId to string
     if "_id" in job:
         job["_id"] = str(job["_id"])
+    await _attach_job_owner_fields(job)
     
     logger.info(f"Admin {admin['email']} viewed job {job_id}")
     

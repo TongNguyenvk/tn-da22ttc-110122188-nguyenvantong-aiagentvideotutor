@@ -9,6 +9,7 @@ import {
   cancelAdminJob,
   type AdminUser,
   type AdminCreateUserPayload,
+  type Video as AdminJob,
 } from "@/lib/api";
 import {
   Card,
@@ -31,17 +32,132 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Users as UsersIcon,
-  Video,
+  Video as VideoIcon,
   Loader2,
   Ban,
   CheckCircle,
   UserPlus,
   Square,
+  Eye,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { type FormEvent, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { AdminDashboard } from "./AdminDashboard";
+
+const STATUS_LABELS: Record<string, string> = {
+  pending: "Đang chờ",
+  queued: "Trong hàng đợi",
+  running: "Đang chạy",
+  processing: "Đang xử lý",
+  pending_review: "Chờ duyệt",
+  completed: "Hoàn thành",
+  failed: "Thất bại",
+  cancelled: "Đã hủy",
+};
+
+const TIER_LABELS: Record<string, string> = {
+  free: "Miễn phí",
+  pro: "Chuyên nghiệp",
+  enterprise: "Doanh nghiệp",
+};
+
+const JOB_TYPE_LABELS: Record<string, string> = {
+  web: "Web",
+  browser: "Trình duyệt",
+  chrome: "Chrome",
+  office: "Office",
+  os: "OS worker",
+  presentation: "Slides",
+  presentation_gg: "Google Slides",
+};
+
+const SENSITIVE_DETAIL_KEYS = [
+  "password",
+  "secret",
+  "token",
+  "api_key",
+  "apikey",
+  "internal_api",
+  "script",
+  "tts_script",
+];
+
+const DETAIL_KEY_LABELS: Record<string, string> = {
+  app_type: "Ứng dụng",
+  browser_url: "URL trình duyệt",
+  uploaded_file_url: "File đầu vào",
+  tts_engine: "TTS engine",
+  tts_voice: "Giọng đọc",
+  padding_ms: "Khoảng nghỉ",
+  enable_tts: "Bật TTS",
+  enable_review: "Bật duyệt script",
+  max_steps: "Số bước tối đa",
+  video_url: "URL video",
+  video_path: "Đường dẫn video",
+  duration_seconds: "Thời lượng giây",
+  output_path: "Đường dẫn output",
+};
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Chưa có";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function formatDetailValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "Không có";
+  if (typeof value === "boolean") return value ? "Có" : "Không";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function shouldShowDetailKey(key: string, value: unknown) {
+  if (value === null || value === undefined || value === "") return false;
+  const normalizedKey = key.toLowerCase();
+  return !SENSITIVE_DETAIL_KEYS.some((sensitiveKey) =>
+    normalizedKey.includes(sensitiveKey),
+  );
+}
+
+function getDetailEntries(record?: Record<string, unknown> | null) {
+  if (!record) return [];
+  return Object.entries(record).filter(([key, value]) =>
+    shouldShowDetailKey(key, value),
+  );
+}
+
+function formatDetailLabel(key: string) {
+  return DETAIL_KEY_LABELS[key] || key.replace(/_/g, " ");
+}
+
+function DetailItem({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: unknown;
+  mono?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs font-medium uppercase text-gray-500 dark:text-zinc-500">
+        {label}
+      </div>
+      <div
+        className={`mt-1 break-words text-sm text-gray-900 dark:text-zinc-200 ${
+          mono ? "font-mono text-xs" : ""
+        }`}
+      >
+        {formatDetailValue(value)}
+      </div>
+    </div>
+  );
+}
 
 export function Admin() {
   const location = useLocation();
@@ -61,6 +177,7 @@ export function Admin() {
     jobId: string;
     title: string;
   } | null>(null);
+  const [selectedJob, setSelectedJob] = useState<AdminJob | null>(null);
   const [cancelReason, setCancelReason] = useState("policy_violation");
 
   const cancelReasons = [
@@ -620,7 +737,7 @@ export function Admin() {
           <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-black/40 dark:backdrop-blur-2xl">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Video className="w-5 h-5" />
+                <VideoIcon className="w-5 h-5" />
                 Danh sách công việc
               </CardTitle>
             </CardHeader>
@@ -641,7 +758,7 @@ export function Admin() {
                           Tiêu đề
                         </TableHead>
                         <TableHead className="font-semibold text-gray-700 dark:text-gray-300 bg-transparent">
-                          Mã người dùng
+                          Người dùng
                         </TableHead>
                         <TableHead className="font-semibold text-gray-700 dark:text-gray-300 bg-transparent">
                           Trạng thái
@@ -671,8 +788,13 @@ export function Admin() {
                               </span>
                             )}
                           </TableCell>
-                          <TableCell className="font-mono text-xs text-gray-500 dark:text-muted-foreground">
-                            {(job as any).user_id?.slice(0, 8) || "N/A"}...
+                          <TableCell className="text-gray-700 dark:text-gray-300">
+                            <div className="font-medium">
+                              {job.user_name || "Không rõ tên"}
+                            </div>
+                            <div className="font-mono text-xs text-muted-foreground">
+                              {job.user_id ? `${job.user_id.slice(0, 8)}...` : "N/A"}
+                            </div>
                           </TableCell>
                           <TableCell>
                             {job.status === "completed" && (
@@ -714,7 +836,16 @@ export function Admin() {
                             {job.date}
                           </TableCell>
                           <TableCell className="text-right">
-                            {job.status === "running" ? (
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setSelectedJob(job)}
+                              >
+                                <Eye className="w-4 h-4 mr-1" />
+                                Chi tiết
+                              </Button>
+                              {job.status === "running" && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -736,9 +867,8 @@ export function Admin() {
                                   </>
                                 )}
                               </Button>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">-</span>
-                            )}
+                              )}
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -749,6 +879,13 @@ export function Admin() {
             </CardContent>
           </Card>
         </div>
+
+        {selectedJob && (
+          <AdminJobDetailModal
+            job={selectedJob}
+            onClose={() => setSelectedJob(null)}
+          />
+        )}
 
         {jobToCancel && (
           <div
@@ -825,4 +962,193 @@ export function Admin() {
   }
 
   return null;
+}
+
+function AdminJobDetailModal({
+  job,
+  onClose,
+}: {
+  job: AdminJob;
+  onClose: () => void;
+}) {
+  const configEntries = getDetailEntries(job.config);
+  const resultEntries = getDetailEntries(job.result);
+  const progress = job.progress;
+  const statusLabel = STATUS_LABELS[job.status] || job.status;
+  const jobTypeLabel = job.job_type
+    ? JOB_TYPE_LABELS[job.job_type] || job.job_type
+    : "Không rõ";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-zinc-950"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-gray-200 bg-gray-50 px-6 py-4 dark:border-white/10 dark:bg-white/5">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white">
+              Chi tiết công việc
+            </h2>
+            <p className="mt-1 break-all font-mono text-xs text-gray-500 dark:text-zinc-400">
+              {job.id}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+            aria-label="Đóng chi tiết công việc"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-6 overflow-y-auto p-6">
+          <section className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{statusLabel}</Badge>
+              <Badge variant="outline">{jobTypeLabel}</Badge>
+              {job.user_status && (
+                <Badge variant="outline">
+                  Tài khoản:{" "}
+                  {job.user_status === "active" ? "Hoạt động" : job.user_status}
+                </Badge>
+              )}
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <DetailItem label="Tên job" value={job.video_name || job.title} />
+              <DetailItem label="Loại job" value={jobTypeLabel} />
+              <DetailItem label="Người tạo" value={job.user_name || "Không rõ tên"} />
+              <DetailItem label="User ID" value={job.user_id || "Không có"} mono />
+              <DetailItem
+                label="Gói người dùng"
+                value={job.user_tier ? TIER_LABELS[job.user_tier] || job.user_tier : "Không rõ"}
+              />
+              <DetailItem
+                label="Trạng thái tài khoản"
+                value={job.user_status || "Không rõ"}
+              />
+            </div>
+          </section>
+
+          <section className="space-y-2">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+              Nội dung yêu cầu
+            </h3>
+            <div className="whitespace-pre-wrap break-words rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-800 dark:border-white/10 dark:bg-white/5 dark:text-zinc-200">
+              {job.task || job.title || "Không có nội dung"}
+            </div>
+          </section>
+
+          <section className="grid gap-4 md:grid-cols-3">
+            <DetailItem label="Tạo lúc" value={formatDateTime(job.created_at)} />
+            <DetailItem label="Bắt đầu" value={formatDateTime(job.started_at)} />
+            <DetailItem label="Kết thúc" value={formatDateTime(job.completed_at)} />
+            {job.cancelled_at && (
+              <DetailItem label="Dừng lúc" value={formatDateTime(job.cancelled_at)} />
+            )}
+            {job.cancelled_by_role && (
+              <DetailItem
+                label="Người dừng"
+                value={job.cancelled_by_role === "admin" ? "Quản trị viên" : "Người dùng"}
+              />
+            )}
+            {job.cancel_reason_label && (
+              <DetailItem label="Lý do dừng" value={job.cancel_reason_label} />
+            )}
+          </section>
+
+          {(progress?.current_phase !== undefined ||
+            progress?.phase_name ||
+            progress?.message) && (
+            <section className="space-y-3">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                Tiến trình
+              </h3>
+              <div className="grid gap-4 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5 md:grid-cols-3">
+                <DetailItem
+                  label="Phase hiện tại"
+                  value={
+                    progress?.current_phase !== undefined
+                      ? progress.current_phase
+                      : "Không có"
+                  }
+                />
+                <DetailItem label="Tên phase" value={progress?.phase_name} />
+                <DetailItem label="Thông báo" value={progress?.message} />
+              </div>
+            </section>
+          )}
+
+          {job.cancel_message && (
+            <section className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+              <div className="font-semibold">Thông báo dừng</div>
+              <div className="mt-1">{job.cancel_message}</div>
+            </section>
+          )}
+
+          {job.error && !job.cancel_message && (
+            <section className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+              <div className="font-semibold">Lỗi</div>
+              <div className="mt-1 whitespace-pre-wrap break-words">{job.error}</div>
+            </section>
+          )}
+
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+              Cấu hình và đầu vào
+            </h3>
+            {configEntries.length ? (
+              <div className="grid gap-4 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5 md:grid-cols-2">
+                {configEntries.map(([key, value]) => (
+                  <DetailItem
+                    key={key}
+                    label={formatDetailLabel(key)}
+                    value={value}
+                    mono={typeof value === "string" && value.length > 48}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-zinc-400">
+                Không có cấu hình đầu vào để hiển thị.
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+              Kết quả
+            </h3>
+            {resultEntries.length ? (
+              <div className="grid gap-4 rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5 md:grid-cols-2">
+                {resultEntries.map(([key, value]) => (
+                  <DetailItem
+                    key={key}
+                    label={formatDetailLabel(key)}
+                    value={value}
+                    mono={typeof value === "string" && value.length > 48}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-zinc-400">
+                Chưa có kết quả.
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="flex justify-end border-t border-gray-200 bg-gray-50 px-6 py-4 dark:border-white/10 dark:bg-white/5">
+          <Button variant="outline" onClick={onClose}>
+            Đóng
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
 }

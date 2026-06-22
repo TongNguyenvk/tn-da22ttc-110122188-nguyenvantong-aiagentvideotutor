@@ -18,18 +18,30 @@ export interface Video {
   video_url?: string;
   jobId?: string;
   user_id?: string;
+  user_name?: string | null;
+  user_status?: string | null;
+  user_tier?: string | null;
+  task?: string;
+  video_name?: string;
+  job_type?: string;
+  config?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
   progress?: JobProgress | null;
   error?: string | null;
   cancel_message?: string | null;
   cancel_reason_label?: string | null;
   cancelled_by_role?: "user" | "admin" | string | null;
   cancelled_at?: string | null;
+  created_at?: string;
+  started_at?: string | null;
+  completed_at?: string | null;
 }
 
 export interface JobProgress {
   current_phase?: number;
   phase_name?: string;
   message?: string;
+  data?: unknown;
 }
 
 export interface JobDetail {
@@ -372,12 +384,23 @@ export async function fetchAllJobs(): Promise<Video[]> {
     video_url: job.result?.video_url,
     duration: job.result?.duration_seconds ? `${job.result.duration_seconds}s` : "--",
     user_id: job.user_id,
+    user_name: job.user_name || null,
+    user_status: job.user_status || null,
+    user_tier: job.user_tier || null,
+    task: job.task || "",
+    video_name: job.video_name || "",
+    job_type: job.job_type || "",
+    config: job.config || {},
+    result: job.result || null,
     progress: job.progress || null,
     error: job.error || null,
     cancel_message: job.cancel_message || null,
     cancel_reason_label: job.cancel_reason_label || null,
     cancelled_by_role: job.cancelled_by_role || null,
     cancelled_at: job.cancelled_at || null,
+    created_at: job.created_at,
+    started_at: job.started_at || null,
+    completed_at: job.completed_at || null,
   }));
 }
 
